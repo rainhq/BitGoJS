@@ -1,11 +1,12 @@
-var bitcoin = require('../bitcoin');
-var common = require('../common');
-var Wallet = require('./wallet');
-var Q = require('q');
-var _ = require('lodash');
-var RmgCoin = require('./coins/rmg');
+const bitcoin = require('../bitcoin');
+const common = require('../common');
+const Wallet = require('./wallet');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
+const _ = require('lodash');
+const RmgCoin = require('./coins/rmg');
 
-var Wallets = function(bitgo, baseCoin) {
+const Wallets = function(bitgo, baseCoin) {
   this.bitgo = bitgo;
   this.baseCoin = baseCoin;
   this.coinWallet = Wallet;
@@ -34,32 +35,32 @@ Wallets.prototype.list = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var queryObject = {};
+  const queryObject = {};
 
   if (params.skip && params.prevId) {
     throw new Error('cannot specify both skip and prevId');
   }
 
   if (params.getbalances) {
-    if (typeof(params.getbalances) !== 'boolean') {
+    if (!_.isBoolean(params.getbalances)) {
       throw new Error('invalid getbalances argument, expecting boolean');
     }
     queryObject.getbalances = params.getbalances;
   }
   if (params.prevId) {
-    if (typeof(params.prevId) !== 'string') {
+    if (!_.isString(params.prevId)) {
       throw new Error('invalid prevId argument, expecting string');
     }
     queryObject.prevId = params.prevId;
   }
   if (params.limit) {
-    if (typeof(params.limit) !== 'number') {
+    if (!_.isNumber(params.limit)) {
       throw new Error('invalid limit argument, expecting number');
     }
     queryObject.limit = params.limit;
   }
 
-  var self = this;
+  const self = this;
   return this.bitgo.get(this.baseCoin.url('/wallet'))
   .query(queryObject)
   .result()
@@ -86,8 +87,8 @@ Wallets.prototype.add = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['label', 'enterprise'], callback);
 
-  if (Array.isArray(params.keys) === false || typeof(params.m) !== 'number' ||
-    typeof(params.n) !== 'number') {
+  if (Array.isArray(params.keys) === false || !_.isNumber(params.m) ||
+    !_.isNumber(params.n)) {
     throw new Error('invalid argument');
   }
 
@@ -99,7 +100,7 @@ Wallets.prototype.add = function(params, callback) {
     throw new Error('invalid argument for clientFlags - array expected');
   }
 
-  if (params.isCold && typeof(params.isCold) !== 'boolean') {
+  if (params.isCold && !_.isBoolean(params.isCold)) {
     throw new Error('invalid argument for isCold - boolean expected');
   }
 
@@ -108,8 +109,8 @@ Wallets.prototype.add = function(params, callback) {
     throw new Error('unsupported multi-sig type');
   }
 
-  var self = this;
-  var walletParams = {
+  const self = this;
+  const walletParams = {
     label: params.label,
     m: params.m,
     n: params.n,
@@ -125,11 +126,11 @@ Wallets.prototype.add = function(params, callback) {
     walletParams.isCold = params.isCold;
   }
 
-  if(params.tags) {
+  if (params.tags) {
     walletParams.tags = params.tags;
   }
 
-  if(params.clientFlags) {
+  if (params.clientFlags) {
     walletParams.clientFlags = params.clientFlags;
   }
 
@@ -166,24 +167,23 @@ Wallets.prototype.add = function(params, callback) {
  * @param callback
  * @returns {*}
  */
-Wallets.prototype.generateWallet = function(params, callback) {
+Wallets.prototype.generateWallet = co(function *(params, callback) {
   params = params || {};
   common.validateParams(params, ['label'], ['passphrase', 'userKey', 'backupXpub', 'enterprise', 'passcodeEncryptionCode'], callback);
-  var self = this;
-  var label = params.label;
+  const self = this;
+  const label = params.label;
 
   if ((!!params.backupXpub + !!params.backupXpubProvider) > 1) {
-    throw new Error("Cannot provide more than one backupXpub or backupXpubProvider flag");
+    throw new Error('Cannot provide more than one backupXpub or backupXpubProvider flag');
   }
 
-  if (params.disableTransactionNotifications !== undefined && typeof(params.disableTransactionNotifications) !== 'boolean') {
+  if (params.disableTransactionNotifications !== undefined && !_.isBoolean(params.disableTransactionNotifications)) {
     throw new Error('Expected disableTransactionNotifications to be a boolean. ');
   }
 
   let userKeychain;
   let backupKeychain;
   let bitgoKeychain;
-  let userKeychainParams;
   let derivationPath;
 
   const passphrase = params.passphrase;
@@ -191,11 +191,11 @@ Wallets.prototype.generateWallet = function(params, callback) {
   const isCold = (!canEncrypt || !!params.userKey);
 
   // Add the user keychain
-  const userKeychainPromise = Q.fcall(function() {
+  const userKeychainPromise = co(function *() {
     let userKeychainParams;
     // User provided user key
     if (params.userKey) {
-      userKeychain = { 'pub': params.userKey };
+      userKeychain = { pub: params.userKey };
       userKeychainParams = userKeychain;
       if (params.coldDerivationSeed) {
         // the derivation only makes sense when a key already exists
@@ -216,13 +216,11 @@ Wallets.prototype.generateWallet = function(params, callback) {
       };
     }
 
-    return self.baseCoin.keychains().add(userKeychainParams)
-    .then(function(newUserKeychain) {
-      userKeychain = _.extend({}, newUserKeychain, userKeychain);
-    });
-  });
+    const newUserKeychain = yield self.baseCoin.keychains().add(userKeychainParams);
+    userKeychain = _.extend({}, newUserKeychain, userKeychain);
+  })();
 
-  const backupKeychainPromise = Q.fcall(function() {
+  const backupKeychainPromise = Promise.try(function() {
     if (params.backupXpubProvider || self.baseCoin instanceof RmgCoin) {
       // If requested, use a KRS or backup key provider
       return self.baseCoin.keychains().createBackup({
@@ -250,68 +248,65 @@ Wallets.prototype.generateWallet = function(params, callback) {
     backupKeychain = _.extend({}, newBackupKeychain, backupKeychain);
   });
 
-  const bitgoKeychainPromise = self.baseCoin.keychains().createBitGo()
+  const bitgoKeychainParams = {
+    enterprise: params.enterprise
+  };
+
+  const bitgoKeychainPromise = self.baseCoin.keychains().createBitGo(bitgoKeychainParams)
   .then(function(keychain) {
     bitgoKeychain = keychain;
   });
 
   // Add the user keychain
-  return Q.all([userKeychainPromise, backupKeychainPromise, bitgoKeychainPromise])
-  .then(function() {
-    var walletParams = {
-      "label": label,
-      "m": 2,
-      "n": 3,
-      "keys": [
-        userKeychain.id,
-        backupKeychain.id,
-        bitgoKeychain.id
-      ],
-      isCold: isCold
-    };
+  yield Promise.all([userKeychainPromise, backupKeychainPromise, bitgoKeychainPromise]);
+  let walletParams = {
+    label: label,
+    m: 2,
+    n: 3,
+    keys: [
+      userKeychain.id,
+      backupKeychain.id,
+      bitgoKeychain.id
+    ],
+    isCold: isCold
+  };
 
-    if (params.enterprise) {
-      walletParams.enterprise = params.enterprise;
-    }
+  if (params.enterprise) {
+    walletParams.enterprise = params.enterprise;
+  }
 
-    if (params.disableTransactionNotifications) {
-      walletParams.disableTransactionNotifications = params.disableTransactionNotifications;
-    }
+  if (params.disableTransactionNotifications) {
+    walletParams.disableTransactionNotifications = params.disableTransactionNotifications;
+  }
 
-    if (self.baseCoin.getFamily() === 'xrp' && params.rootPrivateKey) {
-      walletParams.rootPrivateKey = params.rootPrivateKey;
-    }
+  if (self.baseCoin.getFamily() === 'xrp' && params.rootPrivateKey) {
+    walletParams.rootPrivateKey = params.rootPrivateKey;
+  }
 
-    const keychains = {
-      userKeychain: userKeychain,
-      backupKeychain: backupKeychain,
-      bitgoKeychain: bitgoKeychain
-    };
-    return self.baseCoin.supplementGenerateWallet(walletParams, keychains);
-  })
-  .then(function(walletParams) {
-    return self.bitgo.post(self.baseCoin.url('/wallet')).send(walletParams).result();
-  })
-  .then(function(newWallet) {
-    var result = {
-      wallet: new self.coinWallet(self.bitgo, self.baseCoin, newWallet),
-      userKeychain: userKeychain,
-      backupKeychain: backupKeychain,
-      bitgoKeychain: bitgoKeychain
-    };
+  const keychains = {
+    userKeychain,
+    backupKeychain,
+    bitgoKeychain
+  };
+  walletParams = yield self.baseCoin.supplementGenerateWallet(walletParams, keychains);
+  const newWallet = yield self.bitgo.post(self.baseCoin.url('/wallet')).send(walletParams).result();
+  const result = {
+    wallet: new self.coinWallet(self.bitgo, self.baseCoin, newWallet),
+    userKeychain: userKeychain,
+    backupKeychain: backupKeychain,
+    bitgoKeychain: bitgoKeychain
+  };
 
-    if (backupKeychain.prv) {
-      result.warning = 'Be sure to backup the backup keychain -- it is not stored anywhere else!';
-    }
+  if (backupKeychain.prv) {
+    result.warning = 'Be sure to backup the backup keychain -- it is not stored anywhere else!';
+  }
 
-    if (derivationPath) {
-      userKeychain.derivationPath = derivationPath;
-    }
+  if (derivationPath) {
+    userKeychain.derivationPath = derivationPath;
+  }
 
-    return result;
-  })
-  .nodeify(callback);
-};
+  return Promise.resolve(result).asCallback(callback);
+});
 
 //
 // listShares
@@ -387,10 +382,10 @@ Wallets.prototype.cancelShare = function(params, callback) {
 //
 Wallets.prototype.acceptShare = function(params, callback) {
   params = params || {};
-  common.validateParams(params, ['walletShareId'], ['overrideEncryptedPrv'], callback);
+  common.validateParams(params, ['walletShareId'], ['overrideEncryptedPrv', 'userPassword', 'newWalletPassphrase'], callback);
 
-  var self = this;
-  var encryptedPrv = params.overrideEncryptedPrv;
+  const self = this;
+  let encryptedPrv = params.overrideEncryptedPrv;
 
   return this.getShare({ walletShareId: params.walletShareId })
   .then(function(walletShare) {
@@ -401,28 +396,28 @@ Wallets.prototype.acceptShare = function(params, callback) {
 
     // More than viewing was requested, so we need to process the wallet keys using the shared ecdh scheme
     if (!params.userPassword) {
-      throw new Error("userPassword param must be provided to decrypt shared key");
+      throw new Error('userPassword param must be provided to decrypt shared key');
     }
 
     return self.bitgo.getECDHSharingKeychain()
     .then(function(sharingKeychain) {
       if (!sharingKeychain.encryptedXprv) {
-        throw new Error('encryptedXprv was not found on sharing keychain')
+        throw new Error('encryptedXprv was not found on sharing keychain');
       }
 
       // Now we have the sharing keychain, we can work out the secret used for sharing the wallet with us
       sharingKeychain.prv = self.bitgo.decrypt({ password: params.userPassword, input: sharingKeychain.encryptedXprv });
-      var rootExtKey = bitcoin.HDNode.fromBase58(sharingKeychain.prv);
+      const rootExtKey = bitcoin.HDNode.fromBase58(sharingKeychain.prv);
 
       // Derive key by path (which is used between these 2 users only)
-      var privKey = bitcoin.hdPath(rootExtKey).deriveKey(walletShare.keychain.path);
-      var secret = self.bitgo.getECDHSecret({ eckey: privKey, otherPubKeyHex: walletShare.keychain.fromPubKey });
+      const privKey = bitcoin.hdPath(rootExtKey).deriveKey(walletShare.keychain.path);
+      const secret = self.bitgo.getECDHSecret({ eckey: privKey, otherPubKeyHex: walletShare.keychain.fromPubKey });
 
       // Yes! We got the secret successfully here, now decrypt the shared wallet prv
-      var decryptedSharedWalletPrv = self.bitgo.decrypt({ password: secret, input: walletShare.keychain.encryptedPrv });
+      const decryptedSharedWalletPrv = self.bitgo.decrypt({ password: secret, input: walletShare.keychain.encryptedPrv });
 
       // We will now re-encrypt the wallet with our own password
-      var newWalletPassphrase = params.newWalletPassphrase || params.userPassword;
+      const newWalletPassphrase = params.newWalletPassphrase || params.userPassword;
       encryptedPrv = self.bitgo.encrypt({ password: newWalletPassphrase, input: decryptedSharedWalletPrv });
 
       // Carry on to the next block where we will post the acceptance of the share with the encrypted prv
@@ -430,7 +425,7 @@ Wallets.prototype.acceptShare = function(params, callback) {
     });
   })
   .then(function() {
-    var updateParams = {
+    const updateParams = {
       walletShareId: params.walletShareId,
       state: 'accepted'
     };
@@ -454,7 +449,7 @@ Wallets.prototype.getWallet = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['id'], [], callback);
 
-  var self = this;
+  const self = this;
 
   return this.bitgo.get(this.baseCoin.url('/wallet/' + params.id))
   .result()

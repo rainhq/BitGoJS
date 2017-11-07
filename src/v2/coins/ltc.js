@@ -1,12 +1,10 @@
-var Btc = require('./btc');
-var bitcoin = require('bitcoinjs-lib');
-var _ = require('lodash');
+const btcPrototype = require('./btc').prototype;
+const bitcoin = require('bitcoinjs-lib');
 
-var Ltc = function() {
+const Ltc = function() {
   // this function is called externally from BaseCoin
   // replace the BaseCoin prototype with the local override prototype, which inherits from BaseCoin
   // effectively, move the BaseCoin prototype one level away
-  this.__proto__ = Ltc.prototype;
   this.network = {
     messagePrefix: '\x19Litecoin Signed Message:\n',
     bip32: {
@@ -20,12 +18,14 @@ var Ltc = function() {
     dustSoftThreshold: 100000, // https://github.com/litecoin-project/litecoin/blob/v0.8.7.2/src/main.h#L53
     feePerKb: 100000 // https://github.com/litecoin-project/litecoin/blob/v0.8.7.2/src/main.cpp#L56
   };
-  this.altScriptHash = bitcoin.networks.litecoin.scriptHash;
+  // use legacy script hash version, which is the current Bitcoin one
+  this.altScriptHash = bitcoin.networks.bitcoin.scriptHash;
   // do not support alt destinations in prod
   this.supportAltScriptDestination = false;
 };
 
-Ltc.prototype.__proto__ = Btc.prototype;
+Ltc.prototype = Object.create(btcPrototype);
+Ltc.constructor = Ltc;
 
 Ltc.prototype.getChain = function() {
   return 'ltc';

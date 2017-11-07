@@ -4,21 +4,18 @@
 //
 // Copyright 2015, BitGo, Inc.  All Rights Reserved.
 //
-var common = require('./common');
-var Util = require('./util');
-var assert = require('assert');
+const common = require('./common');
+const assert = require('assert');
 
-var Address = require('bitcoinjs-lib/src/address');
-var Transaction = require('bitcoinjs-lib/src/transaction');
-var networks = require('bitcoinjs-lib/src/networks');
+const bitcoin = require('./bitcoin');
 
-var Q = require('q');
-var _ = require('lodash');
+const Promise = require('bluebird');
+const _ = require('lodash');
 
 //
 // Constructor
 //
-var PendingApproval = function(bitgo, pendingApproval, wallet) {
+const PendingApproval = function(bitgo, pendingApproval, wallet) {
   this.bitgo = bitgo;
   this.pendingApproval = pendingApproval;
   this.wallet = wallet;
@@ -128,7 +125,7 @@ PendingApproval.prototype.get = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var self = this;
+  const self = this;
   return this.bitgo.get(this.url())
   .result()
   .then(function(res) {
@@ -142,7 +139,7 @@ PendingApproval.prototype.get = function(params, callback) {
 // Helper function to ensure that self.wallet is set
 //
 PendingApproval.prototype.populateWallet = function() {
-  var self = this;
+  const self = this;
   if (!self.wallet) {
     return self.bitgo.wallets().get({ id: self.info().transactionRequest.sourceWallet })
     .then(function(wallet) {
@@ -153,11 +150,11 @@ PendingApproval.prototype.populateWallet = function() {
     });
   }
 
-  if (self.wallet.id() != self.info().transactionRequest.sourceWallet) {
+  if (self.wallet.id() !== self.info().transactionRequest.sourceWallet) {
     throw new Error('unexpected source wallet for pending approval');
   }
 
-  return Q(); // otherwise returns undefined
+  return Promise.resolve(); // otherwise returns undefined
 };
 
 //
@@ -168,18 +165,17 @@ PendingApproval.prototype.recreateAndSignTransaction = function(params, callback
   params = _.extend({}, params);
   common.validateParams(params, ['txHex'], [], callback);
 
-  var transaction = Transaction.fromHex(params.txHex);
+  const transaction = bitcoin.Transaction.fromHex(params.txHex);
   if (!transaction.outs) {
     throw new Error('transaction had no outputs or failed to parse successfully');
   }
 
-  var network = networks[common.getNetwork()];
+  const network = bitcoin.networks[common.getNetwork()];
   params.recipients = {};
 
-  var self = this;
+  const self = this;
 
-  return Q()
-  .then(function() {
+  return Promise.try(function() {
     if (self.info().transactionRequest.recipients) {
       // recipients object found on the pending approvals - use it
       params.recipients = self.info().transactionRequest.recipients;
@@ -187,8 +183,8 @@ PendingApproval.prototype.recreateAndSignTransaction = function(params, callback
     }
     if (transaction.outs.length <= 2) {
       transaction.outs.forEach(function (out) {
-        var outAddress = Address.fromOutputScript(out.script, network).toBase58Check();
-        if (self.info().transactionRequest.destinationAddress == outAddress) {
+        const outAddress = bitcoin.address.fromOutputScript(out.script, network).toBase58Check();
+        if (self.info().transactionRequest.destinationAddress === outAddress) {
           // If this is the destination, then spend to it
           params.recipients[outAddress] = out.value;
         }
@@ -198,11 +194,11 @@ PendingApproval.prototype.recreateAndSignTransaction = function(params, callback
 
     // This looks like a sendmany
     // Attempt to figure out the outputs by choosing all outputs that were not going back to the wallet as change addresses
-    return self.wallet.addresses({chain: 1, sort: -1, limit:500})
+    return self.wallet.addresses({ chain: 1, sort: -1, limit: 500 })
     .then(function(result) {
-      var changeAddresses = _.keyBy(result.addresses, 'address');
+      const changeAddresses = _.keyBy(result.addresses, 'address');
       transaction.outs.forEach(function (out) {
-        var outAddress = Address.fromOutputScript(out.script, network).toBase58Check();
+        const outAddress = bitcoin.address.fromOutputScript(out.script, network).toBase58Check();
         if (!changeAddresses[outAddress]) {
           // If this is not a change address, then spend to it
           params.recipients[outAddress] = out.value;
@@ -228,7 +224,7 @@ PendingApproval.prototype.constructApprovalTx = function(params, callback) {
   }
 
   if (params.useOriginalFee) {
-    if (typeof(params.useOriginalFee) != 'boolean') {
+    if (!_.isBoolean(params.useOriginalFee)) {
       throw new Error('invalid type for useOriginalFeeRate');
     }
     if (params.fee || params.feeRate || params.feeTxConfirmTarget) {
@@ -236,11 +232,10 @@ PendingApproval.prototype.constructApprovalTx = function(params, callback) {
     }
   }
 
-  var self = this;
-  return Q()
-  .then(function() {
+  const self = this;
+  return Promise.try(function() {
     if (self.type() === 'transactionRequest') {
-      var extendParams = { txHex: self.info().transactionRequest.transaction };
+      const extendParams = { txHex: self.info().transactionRequest.transaction };
       if (params.useOriginalFee) {
         extendParams.fee = self.info().transactionRequest.fee;
       }
@@ -260,14 +255,13 @@ PendingApproval.prototype.approve = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['walletPassphrase', 'otp'], callback);
 
-  var canRecreateTransaction = true;
+  let canRecreateTransaction = true;
   if (this.type() === 'transactionRequest' && !(params.walletPassphrase || params.xprv)) {
     canRecreateTransaction = false;
   }
 
-  var self = this;
-  return Q()
-  .then(function() {
+  const self = this;
+  return Promise.try(function() {
     if (self.type() === 'transactionRequest') {
       if (params.tx) {
         // the approval tx was reconstructed and explicitly specified - pass it through
@@ -290,7 +284,7 @@ PendingApproval.prototype.approve = function(params, callback) {
     }
   })
   .then(function(transaction) {
-    var approvalParams = { 'state': 'approved', 'otp': params.otp };
+    const approvalParams = { state: 'approved', otp: params.otp };
     if (transaction) {
       approvalParams.tx = transaction.tx;
     }
@@ -305,7 +299,7 @@ PendingApproval.prototype.approve = function(params, callback) {
       error.message.indexOf('could not find unspent output for input') !== -1 ||
       error.message.indexOf('transaction conflicts with an existing transaction in the send queue') !== -1)
     ) {
-      throw new Error('unspents expired, wallet passphrase or xprv required to recreate transaction')
+      throw new Error('unspents expired, wallet passphrase or xprv required to recreate transaction');
     }
     throw error;
   });
@@ -319,10 +313,8 @@ PendingApproval.prototype.reject = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var self = this;
-
   return this.bitgo.put(this.url())
-  .send({'state': 'rejected'})
+  .send({ state: 'rejected' })
   .result()
   .nodeify(callback);
 };

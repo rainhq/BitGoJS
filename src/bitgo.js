@@ -4,47 +4,50 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var superagent = require('superagent');
-var bitcoin = require('./bitcoin');
-require('./bitcoinCash'); // this amends hdPath capabilities
-var sanitizeHtml = require('sanitize-html');
-var eol = require('eol');
-var BaseCoin = require('./v2/baseCoin');
-var Blockchain = require('./blockchain');
-var EthBlockchain = require('./eth/ethBlockchain');
-var Keychains = require('./keychains');
-var TravelRule = require('./travelRule');
-var Wallet = require('./wallet');
-var EthWallet = require('./eth/ethWallet');
-var Wallets = require('./wallets');
-var EthWallets = require('./eth/ethWallets');
-var Markets = require('./markets');
-var PendingApprovals = require('./pendingapprovals');
-var sjcl = require('./sjcl.min');
-var common = require('./common');
-var Util = require('./util');
-var Q = require('q');
-var pjson = require('../package.json');
-var moment = require('moment');
-var _ = require('lodash');
-var url = require('url');
-var querystring = require('querystring');
-var crypto = require('crypto');
+// signed commit test
+
+const superagent = require('superagent');
+const bitcoin = require('./bitcoin');
+const bitcoinMessage = require('bitcoinjs-message');
+const sanitizeHtml = require('sanitize-html');
+const eol = require('eol');
+const BaseCoin = require('./v2/baseCoin');
+const Blockchain = require('./blockchain');
+const EthBlockchain = require('./eth/ethBlockchain');
+const Keychains = require('./keychains');
+const TravelRule = require('./travelRule');
+const Wallet = require('./wallet');
+const EthWallet = require('./eth/ethWallet');
+const Wallets = require('./wallets');
+const EthWallets = require('./eth/ethWallets');
+const Markets = require('./markets');
+const PendingApprovals = require('./pendingapprovals');
+const shamir = require('secrets.js-grempe');
+const sjcl = require('./sjcl.min');
+const common = require('./common');
+const Util = require('./util');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
+const pjson = require('../package.json');
+const moment = require('moment');
+const _ = require('lodash');
+const url = require('url');
+const querystring = require('querystring');
 
 if (!process.browser) {
   require('superagent-proxy')(superagent);
 }
 
 // Patch superagent to return promises
-var _end = superagent.Request.prototype.end;
+const _end = superagent.Request.prototype.end;
 superagent.Request.prototype.end = function(cb) {
-  var self = this;
+  const self = this;
   if (typeof cb === 'function') {
     return _end.call(self, cb);
   }
 
-  return new Q.Promise(function(resolve, reject) {
-    var error;
+  return new Promise.Promise(function(resolve, reject) {
+    let error;
     try {
       return _end.call(self, function(error, response) {
         if (error) {
@@ -65,18 +68,18 @@ superagent.Request.prototype.result = function(optionalField) {
   return this.then(handleResponseResult(optionalField), handleResponseError);
 };
 
-var handleResponseResult = function(optionalField) {
+const handleResponseResult = function(optionalField) {
   return function(res) {
-    if (typeof(res.status) === 'number' && res.status >= 200 && res.status < 300) {
+    if (_.isNumber(res.status) && res.status >= 200 && res.status < 300) {
       return optionalField ? res.body[optionalField] : res.body;
     }
     throw errFromResponse(res);
   };
 };
 
-var errFromResponse = function(res) {
-  var errString = createResponseErrorString(res);
-  var err = new Error(errString);
+const errFromResponse = function(res) {
+  const errString = createResponseErrorString(res);
+  const err = new Error(errString);
 
   err.status = res.status;
   if (res.body) {
@@ -91,7 +94,7 @@ var errFromResponse = function(res) {
   return err;
 };
 
-var handleResponseError = function(e) {
+const handleResponseError = function(e) {
   if (e.response) {
     throw errFromResponse(e.response);
   }
@@ -104,8 +107,8 @@ var handleResponseError = function(e) {
  * @param res Response from an HTTP request
  * @returns {String}
  */
-var createResponseErrorString = function(res) {
-  var errString = res.statusCode.toString(); // at the very least we'll have the status code
+const createResponseErrorString = function(res) {
+  let errString = res.statusCode.toString(); // at the very least we'll have the status code
   if (res.body.error) {
     // this is the case we hope for, where the server gives us a nice error from the JSON body
     errString = res.body.error;
@@ -118,7 +121,7 @@ var createResponseErrorString = function(res) {
       // if the response came back as text, we try to parse it as HTML and remove all tags, leaving us
       // just the bare text, which we then trim of excessive newlines and limit to a certain length
       try {
-        var sanitizedText = sanitizeHtml(res.text, { allowedTags: [] });
+        let sanitizedText = sanitizeHtml(res.text, { allowedTags: [] });
         sanitizedText = sanitizedText.trim();
         sanitizedText = eol.lf(sanitizedText); // use '\n' for all newlines
         sanitizedText = _.replace(sanitizedText, /\n[ |\t]{1,}\n/g, '\n\n'); // remove the spaces/tabs between newlines
@@ -140,11 +143,11 @@ var createResponseErrorString = function(res) {
 //   @useProduction: flag to use the production bitcoin network rather than the
 //                   testnet network.
 //
-var testNetWarningMessage = false;
-var BitGo = function(params) {
+let testNetWarningMessage = false;
+const BitGo = function(params) {
   params = params || {};
   if (!common.validateParams(params, [], ['clientId', 'clientSecret', 'refreshToken', 'accessToken', 'userAgent', 'customRootURI', 'customBitcoinNetwork']) ||
-    (params.useProduction && typeof(params.useProduction) != 'boolean')) {
+    (params.useProduction && !_.isBoolean(params.useProduction))) {
     throw new Error('invalid argument');
   }
 
@@ -206,6 +209,7 @@ var BitGo = function(params) {
   }
 
   this._baseApiUrl = this._baseUrl + '/api/v1';
+  this._baseApiUrlV2 = this._baseUrl + '/api/v2';
   this._user = null;
   this._keychains = null;
   this._wallets = null;
@@ -214,7 +218,7 @@ var BitGo = function(params) {
   this._token = params.accessToken || null;
   this._refreshToken = params.refreshToken || null;
   this._userAgent = params.userAgent || 'BitGoJS/' + this.version();
-  this._promise = Q;
+  this._promise = Promise;
 
   // whether to perform extra client-side validation for some things, such as
   // address validation or signature validation. defaults to true, but can be
@@ -224,7 +228,7 @@ var BitGo = function(params) {
 
   // Create superagent methods specific to this BitGo instance.
   this.request = {};
-  var methods = ['get', 'post', 'put', 'del'];
+  const methods = ['get', 'post', 'put', 'del'];
 
   if (!params.proxy && process.env.BITGO_USE_PROXY) {
     params.proxy = process.env.BITGO_USE_PROXY;
@@ -234,11 +238,13 @@ var BitGo = function(params) {
     throw new Error('cannot use https proxy params while in browser');
   }
 
+  const self = this;
+
   // This is a patching function which can apply our authorization
   // headers to any outbound request.
-  var createPatch = function(method) {
+  const createPatch = function(method) {
     return function() {
-      var req = superagent[method].apply(null, arguments);
+      let req = superagent[method].apply(null, arguments);
       if (params.proxy) {
         req = req.proxy(params.proxy);
       }
@@ -247,9 +253,12 @@ var BitGo = function(params) {
       req.prototypicalEnd = req.end;
       req.end = function() {
         // intercept a request before it's submitted to the server for v2 authentication (based on token)
-        var bitgo = self;
+        const bitgo = self;
+        this.set('BitGo-SDK-Version', bitgo.version());
 
+        // if there is no token, and we're not logged in, the request cannot be v2 authenticated
         this.isV2Authenticated = true;
+        this.authenticationToken = bitgo._token;
         // some of the older tokens appear to be only 40 characters long
         if ((bitgo._token && bitgo._token.length !== 67 && bitgo._token.indexOf('v2x') !== 0)
           || req.forceV1Auth) {
@@ -266,18 +275,18 @@ var BitGo = function(params) {
         if (bitgo._token) {
 
           // do a localized data serialization process
-          var data = this._data;
+          let data = this._data;
           if (typeof data !== 'string') {
             function isJSON(mime) {
               return /[\/+]json\b/.test(mime);
             }
 
-            var contentType = this.getHeader('Content-Type');
+            let contentType = this.getHeader('Content-Type');
             // Parse out just the content type from the header (ignore the charset)
             if (contentType) {
               contentType = contentType.split(';')[0];
             }
-            var serialize = superagent.serialize[contentType];
+            let serialize = superagent.serialize[contentType];
             if (!serialize && isJSON(contentType)) {
               serialize = superagent.serialize['application/json'];
             }
@@ -287,9 +296,9 @@ var BitGo = function(params) {
           }
           this._data = data;
 
-          var urlDetails = url.parse(req.url);
+          let urlDetails = url.parse(req.url);
 
-          var queryString = null;
+          let queryString = null;
           if (req._query && req._query.length > 0) {
             // browser version
             queryString = req._query.join('&');
@@ -310,23 +319,23 @@ var BitGo = function(params) {
             urlDetails = url.parse(req.url);
           }
 
-          var queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
-          var timestamp = Date.now();
-          var signatureSubject = [timestamp, queryPath, data].join('|');
+          const queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
+          const timestamp = Date.now();
+          const signatureSubject = [timestamp, queryPath, data].join('|');
 
           this.set('Auth-Timestamp', timestamp);
 
           // calculate the SHA256 hash of the token
-          var hashDigest = sjcl.hash.sha256.hash(bitgo._token);
-          var hash = sjcl.codec.hex.fromBits(hashDigest);
+          const hashDigest = sjcl.hash.sha256.hash(bitgo._token);
+          const hash = sjcl.codec.hex.fromBits(hashDigest);
 
           // we're not sending the actual token, but only its hash
           this.set('Authorization', 'Bearer ' + hash);
 
           // calculate the HMAC
-          var hmacKey = sjcl.codec.utf8String.toBits(bitgo._token);
-          var hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
-          var hmac = sjcl.codec.hex.fromBits(hmacDigest);
+          const hmacKey = sjcl.codec.utf8String.toBits(bitgo._token);
+          const hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
+          const hmac = sjcl.codec.hex.fromBits(hmacDigest);
 
           this.set('HMAC', hmac);
         }
@@ -337,39 +346,47 @@ var BitGo = function(params) {
       // verify that the response received from the server is signed correctly
       // right now, it is very permissive with the timestamp variance
       req.verifyResponse = function(response) {
-        var bitgo = self;
+        const bitgo = self;
 
-        if (!req.isV2Authenticated || !bitgo._token) {
+        if (!req.isV2Authenticated || !req.authenticationToken) {
           return response;
         }
 
-        var urlDetails = url.parse(req.url);
+        const urlDetails = url.parse(req.url);
 
         // verify the HMAC and timestamp
-        var timestamp = response.headers.timestamp;
-        var queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
+        const timestamp = response.headers.timestamp;
+        const queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
 
-        var signatureSubject = [timestamp, queryPath, response.statusCode, response.text].join('|');
+        const signatureSubject = [timestamp, queryPath, response.statusCode, response.text].join('|');
 
         // calculate the HMAC
-        var hmacKey = sjcl.codec.utf8String.toBits(bitgo._token);
-        var hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
-        var expectedHmac = sjcl.codec.hex.fromBits(hmacDigest);
+        const hmacKey = sjcl.codec.utf8String.toBits(req.authenticationToken);
+        const hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
+        const expectedHmac = sjcl.codec.hex.fromBits(hmacDigest);
 
-        var receivedHmac = response.headers.hmac;
+        const receivedHmac = response.headers.hmac;
         if (expectedHmac !== receivedHmac) {
-          var error = new Error('invalid response HMAC, possible man-in-the-middle-attack');
+          const errorDetails = {
+            expectedHmac,
+            receivedHmac,
+            hmacInput: signatureSubject,
+            requestToken: req.authenticationToken,
+            bitgoToken: bitgo._token
+          };
+          const error = new Error(`invalid response HMAC, possible man-in-the-middle-attack: ${JSON.stringify(errorDetails, null, 4)}`);
+          error.result = errorDetails;
           error.status = 511;
           throw error;
         }
         return response;
       };
 
-      var lastPromise = null;
+      let lastPromise = null;
       req.then = function() {
 
         if (!lastPromise) {
-          var reference = req.end()
+          const reference = req.end()
           .then(req.verifyResponse);
           lastPromise = reference.then.apply(reference, arguments);
         } else {
@@ -392,9 +409,8 @@ var BitGo = function(params) {
     };
   };
 
-  for (var index in methods) {
-    var self = this;
-    var method = methods[index];
+  for (const index in methods) {
+    const method = methods[index];
     self[method] = createPatch(method);
   }
 
@@ -407,40 +423,51 @@ var BitGo = function(params) {
  * @param coinName
  */
 BitGo.prototype.coin = function(coinName) {
-  return new BaseCoin(this, coinName);
+  return BaseCoin(this, coinName);
+};
+
+/**
+ * Create a basecoin object for a virtual token
+ * @param tokenName
+ */
+BitGo.prototype.token = function(tokenName, callback) {
+  return co(function *() {
+    yield this.fetchConstants();
+    return this.coin(tokenName);
+  }).call(this).asCallback(callback);
 };
 
 // Accessor object for Ethereum methods
 BitGo.prototype.eth = function() {
-  var self = this;
+  const self = this;
 
-  var ethBlockchain = function() {
+  const ethBlockchain = function() {
     if (!self._ethBlockchain) {
       self._ethBlockchain = new EthBlockchain(self);
     }
     return self._ethBlockchain;
   };
 
-  var ethWallets = function() {
+  const ethWallets = function() {
     if (!self._ethWallets) {
       self._ethWallets = new EthWallets(self);
     }
     return self._ethWallets;
   };
 
-  var newEthWalletObject = function(walletParams) {
+  const newEthWalletObject = function(walletParams) {
     return new EthWallet(self, walletParams);
   };
 
-  var verifyEthAddress = function(params) {
+  const verifyEthAddress = function(params) {
     params = params || {};
     common.validateParams(params, ['address'], []);
 
-    var address = params.address;
-    return address.indexOf('0x') == 0 && address.length == 42;
+    const address = params.address;
+    return address.indexOf('0x') === 0 && address.length === 42;
   };
 
-  var retrieveGasBalance = function(params, callback) {
+  const retrieveGasBalance = function(params, callback) {
     return self.get(self.url('/eth/user/gas'))
     .result()
     .nodeify(callback);
@@ -461,7 +488,7 @@ BitGo.prototype.getValidate = function() {
 };
 
 BitGo.prototype.setValidate = function(validate) {
-  if (typeof(validate) !== 'boolean') {
+  if (!_.isBoolean(validate)) {
     throw new Error('invalid argument');
   }
   this._validate = validate;
@@ -478,7 +505,7 @@ BitGo.prototype.clear = function() {
 
 // Helper function to return a rejected promise or call callback with error
 BitGo.prototype.reject = function(msg, callback) {
-  return Q().thenReject(new Error(msg)).nodeify(callback);
+  return Promise.reject(new Error(msg)).nodeify(callback);
 };
 
 //
@@ -513,7 +540,7 @@ BitGo.prototype.verifyAddress = function(params) {
   params = params || {};
   common.validateParams(params, ['address'], []);
 
-  var address;
+  let address;
 
   try {
     address = bitcoin.address.fromBase58Check(params.address);
@@ -521,7 +548,7 @@ BitGo.prototype.verifyAddress = function(params) {
     return false;
   }
 
-  var network = bitcoin.getNetwork();
+  const network = bitcoin.getNetwork();
   return address.version === network.pubKeyHash || address.version === network.scriptHash;
 };
 
@@ -532,9 +559,9 @@ BitGo.prototype.verifyPassword = function(params, callback) {
   if (!this._user || !this._user.username) {
     throw new Error('no current user');
   }
-  var key = sjcl.codec.utf8String.toBits(this._user.username);
-  var hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
-  var hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(params.password));
+  const key = sjcl.codec.utf8String.toBits(this._user.username);
+  const hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
+  const hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(params.password));
 
   return this.post(this.url('/user/verifypassword'))
   .send({ password: hmacPassword })
@@ -552,20 +579,169 @@ BitGo.prototype.encrypt = function(params) {
 
   // SJCL internally reuses salts for the same password, so we force a new random salt everytime
   // We use random.randomWords(2,0) because it's what SJCL uses for randomness by default
-  var randomSalt = sjcl.random.randomWords(2, 0);
-  var encryptOptions = { iter: 10000, ks: 256, salt: randomSalt };
+  const randomSalt = sjcl.random.randomWords(2, 0);
+  const encryptOptions = { iter: 10000, ks: 256, salt: randomSalt };
   return sjcl.encrypt(params.password, params.input, encryptOptions);
 };
 
-//
-// decrypt
-// Utility function to decrypt locally.
-//
+/**
+ *
+ * @param params.password The password
+ * @param params.input The input
+ * @returns {*}
+ */
 BitGo.prototype.decrypt = function(params) {
   params = params || {};
   common.validateParams(params, ['input', 'password'], []);
+  try {
+    return sjcl.decrypt(params.password, params.input);
+  } catch (error) {
+    if (error.message.includes('ccm: tag doesn\'t match')) {
+      error.message = 'password error - ' + error.message;
+    }
+    throw error;
+  }
+};
 
-  return sjcl.decrypt(params.password, params.input);
+/**
+ *
+ * @param seed A hexadecimal secret to split
+ * @param passwords An array of the passwords used to encrypt each share
+ * @param m The threshold number of shards necessary to reconstitute the secret
+ * @returns {{xpub: *, xprv: *}}
+ */
+BitGo.prototype.splitSecret = function({ seed, passwords, m }) {
+  if (!Array.isArray(passwords)) {
+    throw new Error('passwords must be an array');
+  }
+  if (!_.isInteger(m) || m < 2) {
+    throw new Error('m must be a positive integer greater than or equal to 2');
+  }
+
+  if (passwords.length < m) {
+    throw new Error('passwords array length cannot be less than m');
+  }
+
+  const n = passwords.length;
+  const secrets = shamir.share(seed, n, m);
+  const shards = _.zipWith(secrets, passwords, (shard, password) => {
+    return this.encrypt({ input: shard, password });
+  });
+  const node = bitcoin.HDNode.fromSeedHex(seed);
+  return {
+    xpub: node.neutered().toBase58(),
+    m,
+    n,
+    seedShares: shards
+  };
+};
+
+/**
+ *
+ * @param shards
+ * @param passwords
+ * @returns {{xpub: *, xprv: *}}
+ */
+BitGo.prototype.reconstituteSecret = function({ shards, passwords }) {
+  if (!Array.isArray(shards)) {
+    throw new Error('shards must be an array');
+  }
+  if (!Array.isArray(passwords)) {
+    throw new Error('passwords must be an array');
+  }
+
+  if (shards.length !== passwords.length) {
+    throw new Error('shards and passwords arrays must have same length');
+  }
+
+  const secrets = _.zipWith(shards, passwords, (shard, password) => {
+    return this.decrypt({ input: shard, password });
+  });
+  const seed = shamir.combine(secrets);
+  const node = bitcoin.HDNode.fromSeedHex(seed);
+  return {
+    xpub: node.neutered().toBase58(),
+    xprv: node.toBase58(),
+    seed
+  };
+};
+
+/**
+ *
+ * @param shards
+ * @param passwords
+ * @param m
+ * @param xpub Optional xpub to verify the results against
+ */
+BitGo.prototype.verifyShards = function({ shards, passwords, m, xpub }) {
+  /**
+   * Generate all possible combinations of a given array's values given subset size m
+   * @param array The array whose values are to be arranged in all combinations
+   * @param m The size of each subset
+   * @param entryIndices Recursively trailing set of currently chosen array indices for the combination subset under construction
+   * @returns {Array}
+   */
+  const generateCombinations = (array, m, entryIndices = []) => {
+
+    let combinations = [];
+
+    if (entryIndices.length === m) {
+      const currentCombination = _.at(array, entryIndices);
+      return [currentCombination];
+    }
+
+    // The highest index
+    let entryIndex = _.last(entryIndices);
+    // If there are currently no indices, assume -1
+    if (_.isUndefined(entryIndex)) {
+      entryIndex = -1;
+    }
+    for (let i = entryIndex + 1; i < array.length; i++) {
+      // append the current index to the trailing indices
+      const currentEntryIndices = [...entryIndices, i];
+      const newCombinations = generateCombinations(array, m, currentEntryIndices);
+      combinations = [...combinations, ...newCombinations];
+    }
+
+    return combinations;
+  };
+
+  if (!Array.isArray(shards)) {
+    throw new Error('shards must be an array');
+  }
+  if (!Array.isArray(passwords)) {
+    throw new Error('passwords must be an array');
+  }
+
+  if (shards.length !== passwords.length) {
+    throw new Error('shards and passwords arrays must have same length');
+  }
+
+  const secrets = _.zipWith(shards, passwords, (shard, password) => {
+    return this.decrypt({ input: shard, password });
+  });
+  const secretCombinations = generateCombinations(secrets, m);
+  const seeds = secretCombinations.map(currentCombination => {
+    return shamir.combine(currentCombination);
+  });
+  const uniqueSeeds = _.uniq(seeds);
+  if (uniqueSeeds.length !== 1) {
+    return false;
+  }
+  const seed = _.first(uniqueSeeds);
+  const node = bitcoin.HDNode.fromSeedHex(seed);
+  const restoredXpub = node.neutered().toBase58();
+
+  if (!_.isUndefined(xpub)) {
+    if (!_.isString(xpub)) {
+      throw new Error('xpub must be a string');
+    }
+    if (restoredXpub !== xpub) {
+      return false;
+    }
+  }
+
+  return true;
 };
 
 //
@@ -576,13 +752,13 @@ BitGo.prototype.getECDHSecret = function(params) {
   params = params || {};
   common.validateParams(params, ['otherPubKeyHex'], []);
 
-  if (typeof(params.eckey) !== 'object') {
+  if (!_.isObject(params.eckey)) {
     throw new Error('eckey object required');
   }
 
-  var otherKeyPub = bitcoin.ECPair.fromPublicKeyBuffer(new Buffer(params.otherPubKeyHex, 'hex'));
-  var secretPoint = otherKeyPub.Q.multiply(params.eckey.d);
-  var secret = Util.bnToByteArrayUnsigned(secretPoint.affineX);
+  const otherKeyPub = bitcoin.ECPair.fromPublicKeyBuffer(new Buffer(params.otherPubKeyHex, 'hex'));
+  const secretPoint = otherKeyPub.Q.multiply(params.eckey.d);
+  const secret = Util.bnToByteArrayUnsigned(secretPoint.affineX);
   return new Buffer(secret).toString('hex');
 };
 
@@ -593,7 +769,7 @@ BitGo.prototype.getECDHSharingKeychain = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], []);
 
-  var self = this;
+  const self = this;
 
   return this.get(this.url('/user/settings'))
   .result()
@@ -667,8 +843,8 @@ BitGo.prototype.handleTokenIssuance = function(responseBody, password) {
   // make sure the response body contains the necessary properties
   common.validateParams(responseBody, ['derivationPath'], ['encryptedECDHXprv']);
 
-  var serverXpub = common.Environments[this.env].serverXpub;
-  var ecdhXprv = this._ecdhXprv;
+  const serverXpub = common.Environments[this.env].serverXpub;
+  let ecdhXprv = this._ecdhXprv;
   if (!ecdhXprv) {
     if (!password || !responseBody.encryptedECDHXprv) {
       throw new Error('ecdhXprv property must be set or password and encrypted encryptedECDHXprv must be provided');
@@ -683,20 +859,20 @@ BitGo.prototype.handleTokenIssuance = function(responseBody, password) {
   }
 
   // construct HDNode objects for client's xprv and server's xpub
-  var clientHDNode = bitcoin.HDNode.fromBase58(ecdhXprv);
-  var serverHDNode = bitcoin.HDNode.fromBase58(serverXpub);
+  const clientHDNode = bitcoin.HDNode.fromBase58(ecdhXprv);
+  const serverHDNode = bitcoin.HDNode.fromBase58(serverXpub);
 
   // BIP32 derivation path is applied to both client and server master keys
-  var derivationPath = responseBody.derivationPath;
-  var clientDerivedNode = bitcoin.hdPath(clientHDNode).derive(derivationPath);
-  var serverDerivedNode = bitcoin.hdPath(serverHDNode).derive(derivationPath);
+  const derivationPath = responseBody.derivationPath;
+  const clientDerivedNode = bitcoin.hdPath(clientHDNode).derive(derivationPath);
+  const serverDerivedNode = bitcoin.hdPath(serverHDNode).derive(derivationPath);
 
   // calculating one-time ECDH key
-  var secretPoint = serverDerivedNode.keyPair.__Q.multiply(clientDerivedNode.keyPair.d);
-  var secret = secretPoint.getEncoded().toString('hex');
+  const secretPoint = serverDerivedNode.keyPair.__Q.multiply(clientDerivedNode.keyPair.d);
+  const secret = secretPoint.getEncoded().toString('hex');
 
   // decrypt token with symmetric ECDH key
-  var response = {};
+  const response = {};
   try {
     response.token = this.decrypt({ input: responseBody.encryptedToken, password: secret });
   } catch (e) {
@@ -724,18 +900,18 @@ BitGo.prototype.authenticate = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['username', 'password'], ['otp'], callback);
 
-  var username = params.username;
-  var password = params.password;
-  var otp = params.otp;
-  var trust = params.trust;
-  var forceV1Auth = !!params.forceV1Auth;
+  const username = params.username;
+  const password = params.password;
+  const otp = params.otp;
+  const trust = params.trust;
+  const forceV1Auth = !!params.forceV1Auth;
 
   // Calculate the password HMAC so we don't send clear-text passwords
-  var key = sjcl.codec.utf8String.toBits(username);
-  var hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
-  var hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(password));
+  const key = sjcl.codec.utf8String.toBits(username);
+  const hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
+  const hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(password));
 
-  var authParams = {
+  const authParams = {
     email: username,
     password: hmacPassword,
     forceSMS: !!params.forceSMS
@@ -754,12 +930,12 @@ BitGo.prototype.authenticate = function(params, callback) {
     authParams.extensionAddress = this._extensionKey.getAddress();
   }
 
-  var self = this;
+  const self = this;
   if (this._token) {
     return this.reject('already logged in', callback);
   }
 
-  var request = this.post(this.url('/user/login'));
+  const request = this.post(this.url('/user/login'));
   if (forceV1Auth) {
     request.forceV1Auth = true;
     // tell the server that the client was forced to downgrade the authentication protocol
@@ -768,7 +944,7 @@ BitGo.prototype.authenticate = function(params, callback) {
   return request.send(authParams)
   .then(function(response) {
     // extract body and user information
-    var body = response.body;
+    const body = response.body;
     self._user = body.user;
 
     if (body.access_token) {
@@ -777,12 +953,12 @@ BitGo.prototype.authenticate = function(params, callback) {
     } else {
       // check the presence of an encrypted ECDH xprv
       // if not present, legacy account
-      var encryptedXprv = body.encryptedECDHXprv;
+      const encryptedXprv = body.encryptedECDHXprv;
       if (!encryptedXprv) {
         throw new Error('Keychain needs encryptedXprv property');
       }
 
-      var responseDetails = self.handleTokenIssuance(response.body, password);
+      const responseDetails = self.handleTokenIssuance(response.body, password);
       self._token = responseDetails.token;
       self._ecdhXprv = responseDetails.ecdhXprv;
 
@@ -816,7 +992,7 @@ BitGo.prototype.registerPushToken = function(params, callback) {
     return this.reject('not logged in', callback);
   }
 
-  var postParams = _.pick(params, ['pushToken', 'operatingSystem']);
+  const postParams = _.pick(params, ['pushToken', 'operatingSystem']);
 
   return this.post(this.url('/devices'))
   .send(postParams)
@@ -839,7 +1015,7 @@ BitGo.prototype.verifyPushToken = function(params, callback) {
     return this.reject('not logged in', callback);
   }
 
-  var postParams = _.pick(params, 'pushVerificationToken');
+  const postParams = _.pick(params, 'pushVerificationToken');
 
   return this.post(this.url('/devices/verify'))
   .send(postParams)
@@ -862,16 +1038,16 @@ BitGo.prototype.authenticateWithAuthCode = function(params, callback) {
     throw new Error('Need client id and secret set first to use this');
   }
 
-  var authCode = params.authCode;
+  const authCode = params.authCode;
 
-  var self = this;
+  const self = this;
   if (this._token) {
     return this.reject('already logged in', callback);
   }
 
-  var token_result;
+  let token_result;
 
-  var request = this.post(this._baseUrl + '/oauth/token');
+  const request = this.post(this._baseUrl + '/oauth/token');
   request.forceV1Auth = true; // OAuth currently only supports v1 authentication
   return request
   .send({
@@ -906,7 +1082,7 @@ BitGo.prototype.refreshToken = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['refreshToken'], callback);
 
-  var refreshToken = params.refreshToken || this._refreshToken;
+  const refreshToken = params.refreshToken || this._refreshToken;
 
   if (!refreshToken) {
     throw new Error('Must provide refresh token or have authenticated with Oauth before');
@@ -916,7 +1092,7 @@ BitGo.prototype.refreshToken = function(params, callback) {
     throw new Error('Need client id and secret set first to use this');
   }
 
-  var self = this;
+  const self = this;
   return this.post(this._baseUrl + '/oauth/token')
   .send({
     grant_type: 'refresh_token',
@@ -997,7 +1173,7 @@ BitGo.prototype.addAccessToken = function(params, callback) {
 
   // check non-string params
   if (params.duration) {
-    if (typeof(params.duration) !== 'number' || params.duration < 0) {
+    if (!_.isNumber(params.duration) || params.duration < 0) {
       throw new Error('duration must be a non-negative number');
     }
   }
@@ -1012,7 +1188,7 @@ BitGo.prototype.addAccessToken = function(params, callback) {
     });
   }
   if (params.txValueLimit) {
-    if (typeof(params.txValueLimit) !== 'number') {
+    if (!_.isNumber(params.txValueLimit)) {
       throw new Error('txValueLimit must be a number');
     }
     if (params.txValueLimit < 0) {
@@ -1027,9 +1203,9 @@ BitGo.prototype.addAccessToken = function(params, callback) {
     throw new Error('must specify scope for token');
   }
 
-  var bitgo = this;
+  const bitgo = this;
 
-  var request = this.post(this.url('/user/accesstoken'));
+  const request = this.post(this.url('/user/accesstoken'));
   if (!bitgo._ecdhXprv) {
     // without a private key, the user cannot decrypt the new access token the server will send
     request.forceV1Auth = true;
@@ -1045,7 +1221,7 @@ BitGo.prototype.addAccessToken = function(params, callback) {
     // verify the authenticity of the server's response before proceeding any further
     request.verifyResponse(response);
 
-    var responseDetails = bitgo.handleTokenIssuance(response.body);
+    const responseDetails = bitgo.handleTokenIssuance(response.body);
     response.body.token = responseDetails.token;
 
     return response;
@@ -1081,14 +1257,14 @@ BitGo.prototype.addAccessToken = function(params, callback) {
 BitGo.prototype.removeAccessToken = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['id', 'label'], callback);
-  var exactlyOne = !!params.id ^ !!params.label;
+  const exactlyOne = !!params.id ^ !!params.label;
   if (!exactlyOne) {
     throw new Error('must provide exactly one of id or label');
   }
 
-  var self = this;
+  const self = this;
 
-  return Q().then(function() {
+  return Promise.try(function() {
     if (params.id) {
       return params.id;
     }
@@ -1100,7 +1276,7 @@ BitGo.prototype.removeAccessToken = function(params, callback) {
         throw new Error('token with this label does not exist');
       }
 
-      var matchingTokens = _.filter(tokens, { label: params.label });
+      const matchingTokens = _.filter(tokens, { label: params.label });
       if (matchingTokens.length > 1) {
         throw new Error('ambiguous call: multiple tokens matching this label');
       }
@@ -1126,7 +1302,7 @@ BitGo.prototype.logout = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var self = this;
+  const self = this;
   return this.get(this.url('/user/logout'))
   .result()
   .then(function() {
@@ -1221,10 +1397,13 @@ BitGo.prototype.extendToken = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var timestamp = Date.now();
-  var duration = params.duration;
-  var message = timestamp + '|' + this._token + '|' + duration;
-  var signature = bitcoin.message.sign(this._extensionKey, message, bitcoin.networks.bitcoin).toString('hex');
+  const timestamp = Date.now();
+  const duration = params.duration;
+  const message = timestamp + '|' + this._token + '|' + duration;
+  const privateKey = this._extensionKey.d.toBuffer();
+  const isCompressed = this._extensionKey.compressed;
+  const prefix = bitcoin.networks.bitcoin.messagePrefix;
+  const signature = bitcoinMessage.sign(message, privateKey, isCompressed, prefix).toString('hex');
 
   return this.post(this.url('/user/extendtoken'))
   .send(params)
@@ -1325,8 +1504,9 @@ BitGo.prototype.newWalletObject = function(walletParams) {
   return new Wallet(this, walletParams);
 };
 
-BitGo.prototype.url = function(path) {
-  return this._baseApiUrl + path;
+BitGo.prototype.url = function(path, version = 1) {
+  const baseUrl = version === 2 ? this._baseApiUrlV2 : this._baseApiUrl;
+  return baseUrl + path;
 };
 
 //
@@ -1342,28 +1522,28 @@ BitGo.prototype.labels = function(params, callback) {
   .nodeify(callback);
 };
 
-/** 
+/**
 * Estimates approximate fee per kb needed for a tx to get into a block
 * @param {number} numBlocks target blocks for the transaction to be confirmed
 * @param {number} maxFee maximum fee willing to be paid (for safety)
 * @param {array[string]} inputs list of unconfirmed txIds from which this transaction uses inputs
 * @param {number} txSize estimated transaction size in bytes, optional parameter used for CPFP estimation.
 * @param {boolean} cpfpAware flag indicating fee should take into account CPFP
-* @returns 
+* @returns
 */
 BitGo.prototype.estimateFee = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var queryParams = { version: 12 };
+  const queryParams = { version: 12 };
   if (params.numBlocks) {
-    if (typeof(params.numBlocks) !== 'number') {
+    if (!_.isNumber(params.numBlocks)) {
       throw new Error('invalid argument');
     }
     queryParams.numBlocks = params.numBlocks;
   }
   if (params.maxFee) {
-    if (typeof(params.maxFee) !== 'number') {
+    if (!_.isNumber(params.maxFee)) {
       throw new Error('invalid argument');
     }
     queryParams.maxFee = params.maxFee;
@@ -1375,13 +1555,13 @@ BitGo.prototype.estimateFee = function(params, callback) {
     queryParams.inputs = params.inputs;
   }
   if (params.txSize) {
-    if (typeof(params.txSize) !== 'number') {
+    if (!_.isNumber(params.txSize)) {
       throw new Error('invalid argument');
     }
     queryParams.txSize = params.txSize;
   }
   if (params.cpfpAware) {
-    if (typeof(params.cpfpAware) !== 'boolean') {
+    if (!_.isBoolean(params.cpfpAware)) {
       throw new Error('invalid argument');
     }
     queryParams.cpfpAware = params.cpfpAware;
@@ -1401,7 +1581,7 @@ BitGo.prototype.instantGuarantee = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['id'], [], callback);
 
-  var self = this;
+  const self = this;
   return this.get(this.url('/instant/' + params.id))
   .result()
   .then(function(body) {
@@ -1411,8 +1591,11 @@ BitGo.prototype.instantGuarantee = function(params, callback) {
     if (!body.signature) {
       throw new Error('no signature found in guarantee response body');
     }
-    var signingAddress = common.Environments[self.env].signingAddress;
-    if (!bitcoin.message.verify(signingAddress, new Buffer(body.signature, 'hex'), body.guarantee, bitcoin.getNetwork())) {
+    const signingAddress = common.Environments[self.env].signingAddress;
+    const signatureBuffer = new Buffer(body.signature, 'hex');
+    const prefix = bitcoin.getNetwork().messagePrefix;
+    const isValidSignature = bitcoinMessage.verify(body.guarantee, signingAddress, signatureBuffer, prefix);
+    if (!isValidSignature) {
       throw new Error('incorrect signature');
     }
     return body;
@@ -1428,7 +1611,6 @@ BitGo.prototype.getBitGoFeeAddress = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var self = this;
   return this.post(this.url('/billing/address'))
   .send({})
   .result()
@@ -1443,7 +1625,6 @@ BitGo.prototype.getWalletAddress = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['address'], [], callback);
 
-  var self = this;
   return this.get(this.url('/walletaddress/' + params.address))
   .result()
   .nodeify(callback);
@@ -1454,17 +1635,18 @@ BitGo.prototype.getWalletAddress = function(params, callback) {
 // Receives a TTL and refetches as necessary
 //
 BitGo.prototype.fetchConstants = function(params, callback) {
-  var env = this.env;
-  if (!BitGo._constants) {
-    BitGo._constants = {};
+  const env = this.env;
+
+  if (!BitGo.prototype._constants) {
+    BitGo.prototype._constants = {};
   }
-  if (!BitGo._constantsExpire) {
-    BitGo._constantsExpire = {};
+  if (!BitGo.prototype._constantsExpire) {
+    BitGo.prototype._constantsExpire = {};
   }
 
-  if (BitGo._constants[env] && BitGo._constantsExpire[env] && new Date() < BitGo._constantsExpire[env]) {
-    return Q().then(function() {
-      return BitGo._constants[env];
+  if (BitGo.prototype._constants[env] && BitGo.prototype._constantsExpire[env] && new Date() < BitGo.prototype._constantsExpire[env]) {
+    return Promise.try(function() {
+      return BitGo.prototype._constants[env];
     })
     .nodeify(callback);
   }
@@ -1472,9 +1654,9 @@ BitGo.prototype.fetchConstants = function(params, callback) {
   return this.get(this.url('/client/constants'))
   .result()
   .then(function(result) {
-    BitGo._constants[env] = result.constants;
-    BitGo._constantsExpire[env] = moment.utc().add(result.ttl, 'second').toDate();
-    return BitGo._constants[env];
+    BitGo.prototype._constants[env] = result.constants;
+    BitGo.prototype._constantsExpire[env] = moment.utc().add(result.ttl, 'second').toDate();
+    return BitGo.prototype._constants[env];
   })
   .nodeify(callback);
 };
@@ -1487,20 +1669,23 @@ BitGo.prototype.getConstants = function(params) {
   params = params || {};
 
   // TODO: once server starts returning eth address keychains, remove bitgoEthAddress
-  var defaultConstants = {
+  const defaultConstants = {
     maxFee: 0.1e8,
     maxFeeRate: 1000000,
     minFeeRate: 5000,
     fallbackFeeRate: 50000,
     minOutputSize: 2730,
     minInstantFeeRate: 10000,
-    bitgoEthAddress: '0x0f47ea803926926f299b7f1afc8460888d850f47'
+    bitgoEthAddress: '0x0f47ea803926926f299b7f1afc8460888d850f47',
+    eth: {
+      tokens: []
+    }
   };
 
   this.fetchConstants(params);
 
   // use defaultConstants as the backup for keys that are not set in this._constants
-  return _.merge({}, defaultConstants, BitGo._constants[this.env]);
+  return _.merge({}, defaultConstants, BitGo.prototype._constants[this.env]);
 };
 
 module.exports = BitGo;

@@ -4,19 +4,18 @@
 // Copyright 2015, BitGo, Inc.  All Rights Reserved.
 //
 
-var assert = require('assert');
-var should = require('should');
-var Q = require('q');
-var _ = require('lodash');
+const assert = require('assert');
+require('should');
+const _ = require('lodash');
 
-var BitGoJS = require('../src/index');
-var TestBitGo = require('./lib/test_bitgo');
+const BitGoJS = require('../src/index');
+const TestBitGo = require('./lib/test_bitgo');
 
 describe('Webhooks', function() {
-  var bitgo;
-  var wallet;
-  var simulatedTransactionWebhookId;
-  var simulatedPendingApprovalWebhookId;
+  let bitgo;
+  let wallet;
+  let simulatedTransactionWebhookId;
+  let simulatedPendingApprovalWebhookId;
 
   before(function (done) {
     BitGoJS.setNetwork('testnet');
@@ -27,7 +26,7 @@ describe('Webhooks', function() {
     simulatedTransactionWebhookId = TestBitGo.TEST_WEBHOOK_TRANSACTION_SIMULATION_ID;
     simulatedPendingApprovalWebhookId = TestBitGo.TEST_WEBHOOK_PENDING_APPROVAL_SIMULATION_ID;
 
-    wallets = bitgo.wallets();
+    const wallets = bitgo.wallets();
     bitgo.authenticateTestUser(bitgo.testUserOTP(), function (err, response) {
       if (err) {
         console.log(err);
@@ -35,7 +34,7 @@ describe('Webhooks', function() {
       }
 
       // Fetch the first wallet.
-      var options = {
+      const options = {
         id: TestBitGo.TEST_WALLET1_ADDRESS
       };
       wallets.get(options, function (err, result) {
@@ -59,11 +58,11 @@ describe('Webhooks', function() {
         });
       });
       assert.throws(function () {
-        wallet.addWebhook({url: 'http://satoshi.com/'}, function () {
+        wallet.addWebhook({ url: 'http://satoshi.com/' }, function () {
         });
       });
       assert.throws(function () {
-        wallet.addWebhook({type: 'transaction'}, function () {
+        wallet.addWebhook({ type: 'transaction' }, function () {
         });
       });
       done();
@@ -71,24 +70,24 @@ describe('Webhooks', function() {
 
     it('add webhook with a bad url', function (done) {
 
-      wallet.addWebhook({url: 'illegalurl', type: 'transaction'})
+      wallet.addWebhook({ url: 'illegalurl', type: 'transaction' })
       .done(
-      function (success) {
-        success.should.eql(null);
-      },
-      function (err) {
-        err.status.should.eql(400);
-        err.message.should.include('invalid webhook');
-        done();
-      }
+        function (success) {
+          success.should.eql(null);
+        },
+        function (err) {
+          err.status.should.eql(400);
+          err.message.should.include('invalid webhook');
+          done();
+        }
       );
     });
 
     it('success', function (done) {
 
-      var url = 'http://test.com/';
-      var type = 'transaction';
-      wallet.addWebhook({url: url, type: type})
+      const url = 'http://test.com/';
+      const type = 'transaction';
+      wallet.addWebhook({ url: url, type: type })
       .then(function (result) {
         result.should.have.property('walletId');
         result.should.have.property('url');
@@ -103,7 +102,7 @@ describe('Webhooks', function() {
   });
 
   describe('Simulate wallet webhooks', function() {
-    it('should enforce arguments', function(){
+    it('should enforce arguments', function() {
       assert.throws(function() { wallet.simulateWebhook({}, function() {}); });
       assert.throws(function() { wallet.simulateWebhook({ webhookId: simulatedTransactionWebhookId }, function() {}); });
       assert.throws(function() { wallet.simulateWebhook({ url: 'https://google.com' }, function() {}); });
@@ -111,7 +110,7 @@ describe('Webhooks', function() {
     });
 
     it('should fail to override with bogus hash', function() {
-      var hash = 'bogus-tx-hash';
+      const hash = 'bogus-tx-hash';
       return wallet.simulateWebhook({ webhookId: simulatedTransactionWebhookId, txHash: hash })
       .then(function() {
         throw new Error('should never be here');
@@ -122,7 +121,7 @@ describe('Webhooks', function() {
     });
 
     it('should fail simulate with an invalid pending approval id', function() {
-      var pendingApprovalId = 'invalid';
+      const pendingApprovalId = 'invalid';
       return wallet.simulateWebhook({ webhookId: simulatedPendingApprovalWebhookId, pendingApprovalId: pendingApprovalId })
       .then(function() {
         throw new Error('should never be here');
@@ -133,8 +132,8 @@ describe('Webhooks', function() {
     });
 
     it('should simulate a transaction webhook with valid hash', function() {
-      var hash = '1909ef7863aa761e4d9cc30be7e2e0a6a34b5adc06c1e82f84f63491bb6ca40f';
-      return wallet.simulateWebhook({ webhookId: simulatedTransactionWebhookId, txHash: hash})
+      const hash = '1909ef7863aa761e4d9cc30be7e2e0a6a34b5adc06c1e82f84f63491bb6ca40f';
+      return wallet.simulateWebhook({ webhookId: simulatedTransactionWebhookId, txHash: hash })
       .then(function(result) {
         // result should contain the simulation response
         result.should.have.property('webhookNotifications');
@@ -146,8 +145,8 @@ describe('Webhooks', function() {
     });
 
     it('should simulate a pending approval with valid pendingApprovalId', function() {
-      var pendingApprovalId = '5824ce6051b236a6064bdc57a518369f';
-      return wallet.simulateWebhook({ webhookId: simulatedPendingApprovalWebhookId, pendingApprovalId: pendingApprovalId})
+      const pendingApprovalId = '5824ce6051b236a6064bdc57a518369f';
+      return wallet.simulateWebhook({ webhookId: simulatedPendingApprovalWebhookId, pendingApprovalId: pendingApprovalId })
       .then(function(result) {
         // result should contain the simulation response
         result.should.have.property('webhookNotifications');
@@ -169,11 +168,11 @@ describe('Webhooks', function() {
 
     it('success', function (done) {
 
-      var url = 'http://test.com/';
+      const url = 'http://test.com/';
       wallet.listWebhooks()
       .then(function (result) {
         result.webhooks.length.should.not.eql(0);
-        var urls = _.map(result.webhooks, 'url');
+        const urls = _.map(result.webhooks, 'url');
         urls.should.include(url);
         done();
       })
@@ -195,11 +194,11 @@ describe('Webhooks', function() {
         });
       });
       assert.throws(function () {
-        wallet.removeWebhook({url: 'http://satoshi.com/'}, function () {
+        wallet.removeWebhook({ url: 'http://satoshi.com/' }, function () {
         });
       });
       assert.throws(function () {
-        wallet.removeWebhook({type: 'transaction'}, function () {
+        wallet.removeWebhook({ type: 'transaction' }, function () {
         });
       });
       done();
@@ -207,9 +206,9 @@ describe('Webhooks', function() {
 
     it('success', function (done) {
 
-      var url = 'http://test.com/';
-      var type = 'transaction';
-      wallet.removeWebhook({url: url, type: type})
+      const url = 'http://test.com/';
+      const type = 'transaction';
+      wallet.removeWebhook({ url: url, type: type })
       .then(function (result) {
         result.should.have.property('removed');
         result.removed.should.equal(1);
@@ -217,7 +216,7 @@ describe('Webhooks', function() {
         return wallet.listWebhooks();
       })
       .then(function (result) {
-        var urls = _.map(result, 'url');
+        const urls = _.map(result, 'url');
         urls.should.not.include(url);
         done();
       })

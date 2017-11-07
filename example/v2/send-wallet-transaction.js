@@ -10,7 +10,7 @@ const walletId = '5941ce2db42fcbc70717e5a898fd1595';
 // TODO: set your passphrase here
 const walletPassphrase = null;
 
-Promise.coroutine(function*() {
+Promise.coroutine(function *() {
   bitgo.authenticateWithAccessToken({ accessToken: accessToken });
 
   const walletInstance = yield basecoin.wallets().get({ id: walletId });
@@ -29,7 +29,7 @@ Promise.coroutine(function*() {
         address: newReceiveAddress2.address
       }
     ],
-    walletPassphrase: 'test@bitgo.com'
+    walletPassphrase: walletPassphrase
   });
   const explanation = basecoin.explainTransaction({ txHex: transaction.tx });
 

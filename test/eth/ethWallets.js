@@ -4,30 +4,28 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var assert = require('assert');
-var should = require('should');
-var ethereumUtil = function() {};
+const assert = require('assert');
+require('should');
+let ethereumUtil = function() {};
 
-var BitGoJS = require('../../src/index');
-var common = require('../../src/common');
-var TestBitGo = require('../lib/test_bitgo');
-var Util = require('../../src/util');
+const TestBitGo = require('../lib/test_bitgo');
+const Util = require('../../src/util');
 
 try {
   ethereumUtil = require('ethereumjs-util');
 } catch (e) {
+  // do nothing
 }
 
-var bitcoin = BitGoJS.bitcoin;
 
-var TEST_WALLET_LABEL = 'wallet management test';
+const TEST_WALLET_LABEL = 'wallet management test';
 
 // TODO: WORK IN PROGRESS
 describe('Ethereum Wallets API:', function() {
-  var bitgo;
-  var wallets;
-  var testWallet;      // Test will create this wallet
-  var keychains = [];  // Test will create these keychains
+  let bitgo;
+  let wallets;
+  let testWallet;      // Test will create this wallet
+  const keychains = [];  // Test will create these keychains
 
   before(function(done) {
     bitgo = new TestBitGo();
@@ -141,7 +139,7 @@ describe('Ethereum Wallets API:', function() {
     });
 
     it('wallet', function() {
-      var options = {
+      const options = {
         xpub: keychains[0].xpub,
         encryptedXprv: keychains[0].xprv
       };
@@ -150,7 +148,7 @@ describe('Ethereum Wallets API:', function() {
         assert.equal(keychain.xpub, keychains[0].xpub);
         assert.equal(keychain.encryptedXprv, keychains[0].xprv);
 
-        var options = {
+        const options = {
           xpub: keychains[1].xpub
         };
         return bitgo.keychains().add(options);
@@ -164,7 +162,7 @@ describe('Ethereum Wallets API:', function() {
         assert(keychain.ethAddress);
         keychains.push(keychain);
 
-        var options = {
+        const options = {
           label: 'my wallet',
           m: 2,
           n: 3,
@@ -194,30 +192,31 @@ describe('Ethereum Wallets API:', function() {
 
   describe('Create Ether Wallet', function() {
     it('arguments', function() {
+      const backupXpub = 1234567890;
       assert.throws(function() {
         wallets.generateWallet({
-          "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-          "backupAddress": backupXpub
+          passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+          backupAddress: backupXpub
         });
       });
       assert.throws(function() {
         wallets.generateWallet({
-          "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-          "label": TEST_WALLET_LABEL,
-          "backupAddress": backupXpub
+          passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+          label: TEST_WALLET_LABEL,
+          backupAddress: backupXpub
         });
       });
       assert.throws(function() {
         wallets.generateWallet({
-          "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-          "label": TEST_WALLET_LABEL,
-          "backupAddress": 123
+          passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+          label: TEST_WALLET_LABEL,
+          backupAddress: 123
         });
       });
       assert.throws(function() {
         wallets.generateWallet({
-          "label": TEST_WALLET_LABEL,
-          "backupAddress": backupXpub
+          label: TEST_WALLET_LABEL,
+          backupAddress: backupXpub
         });
       });
       assert.throws(function() { wallets.generateWallet('invalid'); });
@@ -225,9 +224,9 @@ describe('Ethereum Wallets API:', function() {
     });
 
     it('default create', function() {
-      var options = {
-        "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-        "label": TEST_WALLET_LABEL
+      const options = {
+        passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+        label: TEST_WALLET_LABEL
       };
 
       return bitgo.eth().wallets().generateWallet(options)
@@ -235,7 +234,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         // assert.equal(wallet.spendableBalance(), 0);
@@ -260,11 +259,11 @@ describe('Ethereum Wallets API:', function() {
     it('create with cold backup xpub', function() {
 
       // Simulate a cold backup key
-      var coldBackupKey = bitgo.keychains().create();
-      var options = {
-        "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-        "label": TEST_WALLET_LABEL,
-        "backupXpub": coldBackupKey.xpub
+      const coldBackupKey = bitgo.keychains().create();
+      const options = {
+        passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+        label: TEST_WALLET_LABEL,
+        backupXpub: coldBackupKey.xpub
         // "backupXpub": 'xpub6AHA9hZDN11k2ijHMeS5QqHx2KP9aMBRhTDqANMnwVtdyw2TDYRmF8PjpvwUFcL1Et8Hj59S3gTSMcUQ5gAqTz3Wd8EsMTmF3DChhqPQBnU'
       };
 
@@ -273,7 +272,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         assert.equal(wallet.label(), TEST_WALLET_LABEL);
@@ -297,11 +296,11 @@ describe('Ethereum Wallets API:', function() {
     it('create with cold backup eth address', function() {
 
       // Simulate a cold backup key
-      var coldBackupKey = bitgo.keychains().create();
-      var options = {
-        "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-        "label": TEST_WALLET_LABEL,
-        "backupAddress": Util.xpubToEthAddress(coldBackupKey.xpub)
+      const coldBackupKey = bitgo.keychains().create();
+      const options = {
+        passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+        label: TEST_WALLET_LABEL,
+        backupAddress: Util.xpubToEthAddress(coldBackupKey.xpub)
       };
 
       return bitgo.eth().wallets().generateWallet(options)
@@ -309,7 +308,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         assert.equal(wallet.label(), TEST_WALLET_LABEL);
@@ -333,8 +332,8 @@ describe('Ethereum Wallets API:', function() {
     it('create with mixed-case backup eth address', function() {
 
       // Simulate a cold backup key
-      var coldBackupAddress = '0xfb32740232EcF3FD6D5A7bfC514a2cfb8A310e9b';
-      var options = {
+      const coldBackupAddress = '0xfb32740232EcF3FD6D5A7bfC514a2cfb8A310e9b';
+      const options = {
         passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
         label: TEST_WALLET_LABEL,
         backupAddress: coldBackupAddress
@@ -345,7 +344,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         assert.equal(wallet.label(), TEST_WALLET_LABEL);
@@ -367,10 +366,10 @@ describe('Ethereum Wallets API:', function() {
     });
 
     it('create with backup xpub provider (KRS wallet)', function() {
-      var options = {
-        "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-        "label": TEST_WALLET_LABEL,
-        "backupXpubProvider": "keyternal"
+      const options = {
+        passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+        label: TEST_WALLET_LABEL,
+        backupXpubProvider: 'keyternal'
       };
 
       return bitgo.eth().wallets().generateWallet(options)
@@ -378,7 +377,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         // assert.equal(wallet.spendableBalance(), 0);
@@ -400,10 +399,10 @@ describe('Ethereum Wallets API:', function() {
     });
 
     it('create with different backup xpub provider (KRS wallet)', function() {
-      var options = {
-        "passphrase": TestBitGo.TEST_WALLET1_PASSCODE,
-        "label": TEST_WALLET_LABEL,
-        "backupXpubProvider": "keyternal"
+      const options = {
+        passphrase: TestBitGo.TEST_WALLET1_PASSCODE,
+        label: TEST_WALLET_LABEL,
+        backupXpubProvider: 'keyternal'
       };
 
       return bitgo.eth().wallets().generateWallet(options)
@@ -411,7 +410,7 @@ describe('Ethereum Wallets API:', function() {
         assert.notEqual(result, null);
 
         result.should.have.property('wallet');
-        var wallet = result.wallet;
+        const wallet = result.wallet;
 
         assert.equal(wallet.balance(), 0);
         // assert.equal(wallet.spendableBalance(), 0);
@@ -441,18 +440,18 @@ describe('Ethereum Wallets API:', function() {
     });
 
     it('non existent wallet', function() {
-      var options = {
+      const options = {
         id: '0xaaaaaaaaaaaaaaa0123456789abcdef72e63b508'
       };
       return wallets.get(options)
       .catch(function(error) {
         error.message.should.equal('not found');
         error.status.should.equal(404);
-      })
+      });
     });
 
     it('get', function() {
-      var options = {
+      const options = {
         id: testWallet.id()
       };
       return wallets.get(options)

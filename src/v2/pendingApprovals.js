@@ -1,10 +1,8 @@
-var bitcoin = require('../bitcoin');
-var common = require('../common');
-var PendingApproval = require('./pendingApproval');
-var Q = require('q');
-var _ = require('lodash');
+const common = require('../common');
+const PendingApproval = require('./pendingApproval');
+const _ = require('lodash');
 
-var PendingApprovals = function(bitgo, baseCoin) {
+const PendingApprovals = function(bitgo, baseCoin) {
   this.bitgo = bitgo;
   this.baseCoin = baseCoin;
   this.coinPendingApproval = PendingApproval;
@@ -18,12 +16,11 @@ PendingApprovals.prototype.list = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['walletId', 'enterpriseId'], callback);
 
-  var args = [];
-  var queryParams = {};
-  if (typeof(params.walletId) === 'string') {
+  const queryParams = {};
+  if (_.isString(params.walletId)) {
     queryParams.walletId = params.walletId;
   }
-  if (typeof(params.enterpriseId) === 'string') {
+  if (_.isString(params.enterpriseId)) {
     queryParams.enterprise = params.enterpriseId;
   }
 
@@ -31,7 +28,7 @@ PendingApprovals.prototype.list = function(params, callback) {
     throw new Error('must provide exactly 1 of walletId or enterpriseId to get pending approvals on');
   }
 
-  var self = this;
+  const self = this;
   return this.bitgo.get(this.baseCoin.url('/pendingapprovals'))
   .query(queryParams)
   .result()
@@ -54,7 +51,7 @@ PendingApprovals.prototype.get = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['id'], [], callback);
 
-  var self = this;
+  const self = this;
   return this.bitgo.get(this.baseCoin.url('/pendingapprovals/' + params.id))
   .result()
   .then(function(body) {

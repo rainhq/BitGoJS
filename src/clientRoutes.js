@@ -1,57 +1,58 @@
-var bodyParser = require('body-parser');
+const bodyParser = require('body-parser');
 
-var BitGoJS = require('./index');
-var TransactionBuilder = require('./transactionBuilder');
-var common = require('./common');
-var Q = require('q');
-var url = require('url');
-var _ = require('lodash');
-var pjson = require('../package.json');
+const BitGoJS = require('./index');
+const TransactionBuilder = require('./transactionBuilder');
+const common = require('./common');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
+const url = require('url');
+const _ = require('lodash');
+const pjson = require('../package.json');
 
-var BITGOEXPRESS_USER_AGENT = "BitGoExpress/" + pjson.version;
+const BITGOEXPRESS_USER_AGENT = 'BitGoExpress/' + pjson.version;
 
-var handleLogin = function(req) {
-  var username = req.body.username || req.body.email;
-  var body = req.body;
+const handleLogin = function(req) {
+  const username = req.body.username || req.body.email;
+  const body = req.body;
   body.username = username;
   return req.bitgo.authenticate(body);
 };
 
-var handleDecrypt = function(req) {
+const handleDecrypt = function(req) {
   return {
     decrypted: req.bitgo.decrypt(req.body)
   };
 };
 
-var handleEncrypt = function(req) {
+const handleEncrypt = function(req) {
   return {
     encrypted: req.bitgo.encrypt(req.body)
   };
 };
 
-var handleVerifyAddress = function(req) {
+const handleVerifyAddress = function(req) {
   return {
     verified: req.bitgo.verifyAddress(req.body)
   };
 };
 
-var handleCreateLocalKeyChain = function(req) {
+const handleCreateLocalKeyChain = function(req) {
   return req.bitgo.keychains().create(req.body);
 };
 
-var handleDeriveLocalKeyChain = function(req) {
+const handleDeriveLocalKeyChain = function(req) {
   return req.bitgo.keychains().deriveLocal(req.body);
 };
 
-var handleCreateWalletWithKeychains = function(req) {
+const handleCreateWalletWithKeychains = function(req) {
   return req.bitgo.wallets().createWalletWithKeychains(req.body);
 };
 
-var handleEthGenerateWallet = function(req) {
+const handleEthGenerateWallet = function(req) {
   return req.bitgo.eth().wallets().generateWallet(req.body);
 };
 
-var handleSendCoins = function(req) {
+const handleSendCoins = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.sendCoins(req.body);
@@ -68,7 +69,7 @@ var handleSendCoins = function(req) {
   });
 };
 
-var handleSendMany = function(req) {
+const handleSendMany = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.sendMany(req.body);
@@ -85,7 +86,7 @@ var handleSendMany = function(req) {
   });
 };
 
-var handleCreateTransaction = function(req) {
+const handleCreateTransaction = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.createTransaction(req.body);
@@ -96,7 +97,7 @@ var handleCreateTransaction = function(req) {
   });
 };
 
-var handleEthSendTransaction = function(req) {
+const handleEthSendTransaction = function(req) {
   return req.bitgo.eth().wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.sendTransaction(req.body);
@@ -107,28 +108,28 @@ var handleEthSendTransaction = function(req) {
   });
 };
 
-var handleSignTransaction = function(req) {
+const handleSignTransaction = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.signTransaction(req.body);
   });
 };
 
-var handleShareWallet = function(req) {
+const handleShareWallet = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.shareWallet(req.body);
   });
 };
 
-var handleAcceptShare = function(req) {
-  var params = req.body || {};
+const handleAcceptShare = function(req) {
+  const params = req.body || {};
   params.walletShareId = req.params.shareId;
   return req.bitgo.wallets().acceptShare(params);
 };
 
-var handleApproveTransaction = function(req) {
-  var params = req.body || {};
+const handleApproveTransaction = function(req) {
+  const params = req.body || {};
   return req.bitgo.pendingApprovals().get({ id: req.params.id })
   .then(function(pendingApproval) {
     if (params.state === 'approved') {
@@ -138,34 +139,35 @@ var handleApproveTransaction = function(req) {
   });
 };
 
-var handleConstructApprovalTx = function(req) {
-  var params = req.body || {};
+const handleConstructApprovalTx = function(req) {
+  const params = req.body || {};
   return req.bitgo.pendingApprovals().get({ id: req.params.id })
   .then(function(pendingApproval) {
     return pendingApproval.constructApprovalTx(params);
   });
 };
 
-var handleConsolidateUnspents = function(req) {
+const handleConsolidateUnspents = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.consolidateUnspents(req.body);
   });
 };
 
-var handleFanOutUnspents = function(req) {
+const handleFanOutUnspents = function(req) {
   return req.bitgo.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.fanOutUnspents(req.body);
   });
 };
 
-var handleCalculateMinerFeeInfo = function(req) {
+const handleCalculateMinerFeeInfo = function(req) {
   return TransactionBuilder.calculateMinerFeeInfo({
     bitgo: req.bitgo,
     feeRate: req.body.feeRate,
     nP2SHInputs: req.body.nP2SHInputs,
     nP2PKHInputs: req.body.nP2PKHInputs,
+    nP2SHP2WSHInputs: req.body.nP2SHP2WSHInputs,
     nOutputs: req.body.nOutputs
   });
 };
@@ -175,11 +177,11 @@ var handleCalculateMinerFeeInfo = function(req) {
  * @param req
  * @return {string}
  */
-var createAPIPath = function(req) {
-  var apiPath = '/' + req.params[0];
+const createAPIPath = function(req) {
+  let apiPath = '/' + req.params[0];
   if (!_.isEmpty(req.query)) {
     // req.params does not contain the querystring, so we manually add them here
-    var urlDetails = url.parse(req.url);
+    const urlDetails = url.parse(req.url);
     if (urlDetails.search) {
       // "search" is the properly URL encoded query params, prefixed with "?"
       apiPath += urlDetails.search;
@@ -189,10 +191,18 @@ var createAPIPath = function(req) {
 };
 
 // handle any other API call
-var handleREST = function(req, res, next) {
-  var method = req.method;
-  var bitgo = req.bitgo;
-  var bitgoURL = bitgo.url(createAPIPath(req));
+const handleREST = function(req, res, next) {
+  const method = req.method;
+  const bitgo = req.bitgo;
+  const bitgoURL = bitgo.url(createAPIPath(req));
+  return redirectRequest(bitgo, method, bitgoURL, req, next);
+};
+
+// handle any other API call
+const handleV2UserREST = function(req, res, next) {
+  const method = req.method;
+  const bitgo = req.bitgo;
+  const bitgoURL = bitgo.url('/user' + createAPIPath(req), 2);
   return redirectRequest(bitgo, method, bitgoURL, req, next);
 };
 
@@ -201,7 +211,7 @@ const handleV2VerifyAddress = function(req) {
   common.validateParams(req.body, ['address'], []);
 
   if (req.body.supportOldScriptHashVersion !== undefined &&
-    typeof(req.body.supportOldScriptHashVersion) !== 'boolean') {
+    !_.isBoolean(req.body.supportOldScriptHashVersion)) {
     throw new Error('Expected supportOldScriptHashVersion to be a boolean.');
   }
   const supportOldScriptHashVersion = !!req.body.supportOldScriptHashVersion;
@@ -212,42 +222,70 @@ const handleV2VerifyAddress = function(req) {
   const result = coin.isValidAddress(req.body.address, supportOldScriptHashVersion);
   return {
     isValid: !!result
-  }
+  };
 };
 
 // handle Litecoin address canonicalization
-var handleLtcCanonicalAddress = function(req) {
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
+const handleLtcCanonicalAddress = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
   if (coin.getFamily() !== 'ltc') {
     throw new Error('only Litecoin address canonicalization is supported');
   }
-  var address = req.body.address;
-  var version = req.body.scriptHashVersion;
+  const address = req.body.address;
+  const version = req.body.scriptHashVersion;
   return coin.canonicalAddress(address, version);
 };
 
 // handle new wallet creation
-var handleV2GenerateWallet = function(req) {
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
+const handleV2GenerateWallet = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
   return coin.wallets().generateWallet(req.body)
   .then(function(result) {
     return result.wallet._wallet;
   });
 };
 
+//handle v2 approve transaction
+const handleV2PendingApproval = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const params = req.body || {};
+  const pendingApproval = yield coin.pendingApprovals().get({ id: req.params.id });
+  if (params.state === 'approved') {
+    return pendingApproval.approve(params);
+  }
+  return pendingApproval.reject(params);
+});
+
+// handle wallet share
+const handleV2ShareWallet = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.shareWallet(req.body);
+});
+
+// handle accept wallet share
+const handleV2AcceptWalletShare = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const params = _.extend({}, req.body, { walletShareId: req.params.id });
+  return coin.wallets().acceptShare(params);
+});
+
 // handle sign transaction
-var handleV2SignTx = function(req) {
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
-  return coin.sign(req.body);
+const handleV2SignTx = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  return coin.signTransaction(req.body);
 };
 
 // handle send one
-var handleV2SendOne = function(req) {
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
+const handleV2SendOne = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
   return coin.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.send(req.body);
@@ -265,9 +303,9 @@ var handleV2SendOne = function(req) {
 };
 
 // handle send many
-var handleV2SendMany = function(req) {
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
+const handleV2SendMany = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
   return coin.wallets().get({ id: req.params.id })
   .then(function(wallet) {
     return wallet.sendMany(req.body);
@@ -285,15 +323,15 @@ var handleV2SendMany = function(req) {
 };
 
 // handle any other API call
-var handleV2REST = function(req, res, next) {
-  var method = req.method;
-  var bitgo = req.bitgo;
-  var coin = bitgo.coin(req.params.coin);
-  var coinURL = coin.url(createAPIPath(req));
+const handleV2CoinSpecificREST = function(req, res, next) {
+  const method = req.method;
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const coinURL = coin.url(createAPIPath(req));
   return redirectRequest(bitgo, method, coinURL, req, next);
 };
 
-var redirectRequest = function(bitgo, method, url, req, next) {
+const redirectRequest = function(bitgo, method, url, req, next) {
   switch (method) {
     case 'GET':
       return bitgo.get(url).result().nodeify();
@@ -308,18 +346,18 @@ var redirectRequest = function(bitgo, method, url, req, next) {
   next();
 };
 
-var apiResponse = function(status, result, message) {
-  var err = new Error(message);
+const apiResponse = function(status, result, message) {
+  const err = new Error(message);
   err.status = status;
   err.result = result;
   return err;
 };
 
 // Perform body parsing here only on routes we want
-var parseBody = bodyParser.json();
+const parseBody = bodyParser.json();
 // Create the bitgo object in the request
-var prepareBitGo = function(args) {
-  var params = { env: args.env };
+const prepareBitGo = function(args) {
+  const params = { env: args.env };
   if (args.customrooturi) {
     params.customRootURI = args.customrooturi;
   }
@@ -329,15 +367,15 @@ var prepareBitGo = function(args) {
 
   return function(req, res, next) {
     // Get access token
-    var accessToken;
+    let accessToken;
     if (req.headers.authorization) {
-      var authSplit = req.headers.authorization.split(" ");
+      const authSplit = req.headers.authorization.split(' ');
       if (authSplit.length === 2 && authSplit[0].toLowerCase() === 'bearer') {
         accessToken = authSplit[1];
       }
     }
 
-    var userAgent = req.headers['user-agent'] ? BITGOEXPRESS_USER_AGENT + " " + req.headers['user-agent'] : BITGOEXPRESS_USER_AGENT;
+    const userAgent = req.headers['user-agent'] ? BITGOEXPRESS_USER_AGENT + ' ' + req.headers['user-agent'] : BITGOEXPRESS_USER_AGENT;
     params.accessToken = accessToken;
     params.userAgent = userAgent;
 
@@ -345,18 +383,18 @@ var prepareBitGo = function(args) {
     req.bitgo._promise.longStackSupport = true;
 
     next();
-  }
+  };
 };
 
 // Promise handler wrapper to handle sending responses and error cases
-var promiseWrapper = function(promiseRequestHandler, args) {
+const promiseWrapper = function(promiseRequestHandler, args) {
   return function(req, res, next) {
     if (args.debug) {
       console.log('handle: ' + url.parse(req.url).pathname);
     }
-    Q.fcall(promiseRequestHandler, req, res, next)
+    Promise.try(promiseRequestHandler, req, res, next)
     .then(function(result) {
-      var status = 200;
+      let status = 200;
       if (result.__redirect) {
         res.redirect(result.url);
         status = 302;
@@ -367,25 +405,25 @@ var promiseWrapper = function(promiseRequestHandler, args) {
       }
     })
     .catch(function(caught) {
-      var err;
+      let err;
       if (caught instanceof Error) {
         err = caught;
       } else if (typeof caught === 'string') {
-        err = new Error("(string_error) " + caught);
+        err = new Error('(string_error) ' + caught);
       } else {
-        err = new Error("(object_error) " + JSON.stringify(caught));
+        err = new Error('(object_error) ' + JSON.stringify(caught));
       }
 
-      var message = err.message || 'local error';
+      const message = err.message || 'local error';
       // use attached result, or make one
-      var result = err.result || { error: message };
+      let result = err.result || { error: message };
       result = _.extend({}, result);
       result.message = err.message;
-      var status = err.status || 500;
+      const status = err.status || 500;
       if (!(status >= 200 && status < 300)) {
         console.log('error %s: %s', status, err.message);
       }
-      if (status == 500) {
+      if (status === 500) {
         console.log(err.stack);
       }
       res.status(status).send(result);
@@ -426,13 +464,16 @@ exports = module.exports = function(app, args) {
   app.post('/api/v1/eth/wallet/:id/sendtransaction', parseBody, prepareBitGo(args), promiseWrapper(handleEthSendTransaction, args));
 
   // any other API call
-  app.use('/api/v1/*', parseBody, prepareBitGo(args), promiseWrapper(handleREST, args));
+  app.use('/api/v[1]/*', parseBody, prepareBitGo(args), promiseWrapper(handleREST, args));
 
   // API v2
 
   // generate wallet
   app.post('/api/v2/:coin/wallet/generate', parseBody, prepareBitGo(args), promiseWrapper(handleV2GenerateWallet, args));
 
+  // share wallet
+  app.post('/api/v2/:coin/wallet/:id/share', parseBody, prepareBitGo(args), promiseWrapper(handleV2ShareWallet, args));
+  app.post('/api/v2/:coin/walletshare/:id/acceptshare', parseBody, prepareBitGo(args), promiseWrapper(handleV2AcceptWalletShare, args));
   // sign transaction
   app.post('/api/v2/:coin/signtx', parseBody, prepareBitGo(args), promiseWrapper(handleV2SignTx, args));
 
@@ -443,8 +484,11 @@ exports = module.exports = function(app, args) {
   // Miscellaneous
   app.post('/api/v2/:coin/canonicaladdress', parseBody, prepareBitGo(args), promiseWrapper(handleLtcCanonicalAddress, args));
   app.post('/api/v2/:coin/verifyaddress', parseBody, prepareBitGo(args), promiseWrapper(handleV2VerifyAddress, args));
+  app.put('/api/v2/:coin/pendingapprovals/:id', parseBody, prepareBitGo(args), promiseWrapper(handleV2PendingApproval, args));
+
 
   // any other API v2 call
-  app.use('/api/v2/:coin/*', parseBody, prepareBitGo(args), promiseWrapper(handleV2REST, args));
+  app.use('/api/v2/user/*', parseBody, prepareBitGo(args), promiseWrapper(handleV2UserREST, args));
+  app.use('/api/v2/:coin/*', parseBody, prepareBitGo(args), promiseWrapper(handleV2CoinSpecificREST, args));
 
 };

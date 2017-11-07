@@ -5,11 +5,12 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var crypto = require('crypto');
-var common = require('./common');
-var Util = require('./util');
-var bitcoin = require('./bitcoin');
-var ethereumUtil = function() {};
+const crypto = require('crypto');
+const common = require('./common');
+const Util = require('./util');
+const bitcoin = require('./bitcoin');
+const _ = require('lodash');
+let ethereumUtil = function() {};
 
 try {
   ethereumUtil = require('ethereumjs-util');
@@ -20,7 +21,7 @@ try {
 //
 // Constructor
 //
-var Keychains = function(bitgo) {
+const Keychains = function(bitgo) {
   this.bitgo = bitgo;
 };
 
@@ -33,13 +34,13 @@ Keychains.prototype.isValid = function(params) {
   common.validateParams(params, [], []);
 
   if (params.ethAddress) {
-    if (typeof(params.ethAddress) != 'string') {
+    if (!_.isString(params.ethAddress)) {
       throw new Error('ethAddress must be a string');
     }
     return ethereumUtil.isValidAddress(params.ethAddress);
   }
 
-  if (typeof(params.key) != 'string' && typeof(params.key) != 'object') {
+  if (!_.isString(params.key) && !_.isObject(params.key)) {
     throw new Error('key must be a string or object');
   }
 
@@ -47,7 +48,7 @@ Keychains.prototype.isValid = function(params) {
     if (!params.key.path) {
       bitcoin.HDNode.fromBase58(params.key);
     } else {
-      var hdnode = bitcoin.HDNode.fromBase58(params.key.xpub);
+      const hdnode = bitcoin.HDNode.fromBase58(params.key.xpub);
       bitcoin.hdPath(hdnode).derive(params.key.path);
     }
     return true;
@@ -67,7 +68,7 @@ Keychains.prototype.create = function(params) {
   params = params || {};
   common.validateParams(params, [], []);
 
-  var seed;
+  let seed;
   if (!params.seed) {
     // An extended private key has both a normal 256 bit private key and a 256
     // bit chain code, both of which must be random. 512 bits is therefore the
@@ -77,10 +78,10 @@ Keychains.prototype.create = function(params) {
     seed = params.seed;
   }
 
-  var extendedKey = bitcoin.HDNode.fromSeedBuffer(seed);
-  var xpub = extendedKey.neutered().toBase58();
+  const extendedKey = bitcoin.HDNode.fromSeedBuffer(seed);
+  const xpub = extendedKey.neutered().toBase58();
 
-  var ethAddress = undefined;
+  let ethAddress = undefined;
   try {
     ethAddress = Util.xpubToEthAddress(xpub);
   } catch (e) {
@@ -94,6 +95,14 @@ Keychains.prototype.create = function(params) {
   };
 };
 
+//used by deriveLocal
+const apiResponse = function(status, result, message) {
+  const err = new Error(message);
+  err.status = status;
+  err.result = result;
+  return err;
+};
+
 //
 // deriveLocal
 // Locally derives a keychain from a top level BIP32 string, given a path.
@@ -103,29 +112,29 @@ Keychains.prototype.deriveLocal = function(params) {
   common.validateParams(params, ['path'], ['xprv', 'xpub']);
 
   if (!params.xprv && !params.xpub) {
-    throw new Error("must provide an xpub or xprv for derivation.");
+    throw new Error('must provide an xpub or xprv for derivation.');
   }
   if (params.xprv && params.xpub) {
-    throw new Error("cannot provide both xpub and xprv");
+    throw new Error('cannot provide both xpub and xprv');
   }
 
-  var hdNode;
+  let hdNode;
   try {
     hdNode = bitcoin.HDNode.fromBase58(params.xprv || params.xpub);
   } catch (e) {
-    throw apiResponse(400, {}, "Unable to parse the xprv or xpub");
+    throw apiResponse(400, {}, 'Unable to parse the xprv or xpub');
   }
 
-  var derivedNode;
+  let derivedNode;
   try {
     derivedNode = bitcoin.hdPath(hdNode).derive(params.path);
   } catch (e) {
-    throw apiResponse(400, {}, "Unable to derive HD key from path");
+    throw apiResponse(400, {}, 'Unable to derive HD key from path');
   }
 
-  var xpub = derivedNode.neutered().toBase58();
+  const xpub = derivedNode.neutered().toBase58();
 
-  var ethAddress = undefined;
+  let ethAddress = undefined;
   try {
     ethAddress = Util.xpubToEthAddress(xpub);
   } catch (e) {
@@ -137,7 +146,7 @@ Keychains.prototype.deriveLocal = function(params) {
     xpub: xpub,
     xprv: params.xprv && derivedNode.toBase58(),
     ethAddress: ethAddress
-  }
+  };
 };
 
 //
@@ -242,7 +251,7 @@ Keychains.prototype.get = function(params, callback) {
     throw new Error('xpub or ethAddress must be defined');
   }
 
-  var id = params.xpub || params.ethAddress;
+  const id = params.xpub || params.ethAddress;
   return this.bitgo.post(this.bitgo.url('/keychain/' + encodeURIComponent(id)))
   .send({})
   .result()

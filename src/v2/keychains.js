@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const prova = require('../prova');
 const _ = require('lodash');
 
-var Keychains = function(bitgo, baseCoin) {
+const Keychains = function(bitgo, baseCoin) {
   this.bitgo = bitgo;
   this.baseCoin = baseCoin;
 };
@@ -16,7 +16,7 @@ Keychains.prototype.get = function(params, callback) {
     throw new Error('id must be defined');
   }
 
-  var id = params.id;
+  const id = params.id;
   return this.bitgo.get(this.baseCoin.url('/key/' + encodeURIComponent(id)))
   .result()
   .nodeify(callback);
@@ -26,7 +26,7 @@ Keychains.prototype.create = function(params) {
   params = params || {};
   common.validateParams(params, [], []);
 
-  var seed;
+  let seed;
   if (!params.seed) {
     // An extended private key has both a normal 256 bit private key and a 256
     // bit chain code, both of which must be random. 512 bits is therefore the
@@ -36,8 +36,8 @@ Keychains.prototype.create = function(params) {
     seed = params.seed;
   }
 
-  var extendedKey = prova.HDNode.fromSeedBuffer(seed);
-  var xpub = extendedKey.neutered().toBase58();
+  const extendedKey = prova.HDNode.fromSeedBuffer(seed);
+  const xpub = extendedKey.neutered().toBase58();
   return {
     pub: xpub,
     prv: extendedKey.toBase58()
@@ -46,7 +46,9 @@ Keychains.prototype.create = function(params) {
 
 Keychains.prototype.add = function(params, callback) {
   params = params || {};
-  common.validateParams(params, [], ['pub', 'encryptedPrv', 'type', 'source', 'originalPasscodeEncryptionCode'], callback);
+  common.validateParams(params, [], ['pub', 'encryptedPrv', 'type', 'source', 'originalPasscodeEncryptionCode', 'enterprise'], callback);
+
+
 
   return this.bitgo.post(this.baseCoin.url('/key'))
   .send({
@@ -56,6 +58,7 @@ Keychains.prototype.add = function(params, callback) {
     source: params.source,
     provider: params.provider,
     originalPasscodeEncryptionCode: params.originalPasscodeEncryptionCode,
+    enterprise: params.enterprise
   })
   .result()
   .nodeify(callback);
@@ -65,6 +68,8 @@ Keychains.prototype.createBitGo = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
   params.source = 'bitgo';
+
+  this.baseCoin.preCreateBitGo(params);
 
   return this.add(params, callback);
 };

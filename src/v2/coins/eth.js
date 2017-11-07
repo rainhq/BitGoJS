@@ -1,9 +1,5 @@
-const BaseCoin = require('../baseCoin');
+const baseCoinPrototype = require('../baseCoin').prototype;
 const BigNumber = require('bignumber.js');
-const crypto = require('crypto');
-const prova = require('../../prova');
-const Q = require('q');
-const common = require('../../common');
 const Util = require('../../util');
 const _ = require('lodash');
 let ethAbi = function() {};
@@ -13,10 +9,10 @@ const Eth = function() {
   // this function is called externally from BaseCoin
   // replace the BaseCoin prototype with the local override prototype, which inherits from BaseCoin
   // effectively, move the BaseCoin prototype one level away
-  this.__proto__ = Eth.prototype;
 };
 
-Eth.prototype.__proto__ = BaseCoin.prototype;
+Eth.prototype = Object.create(baseCoinPrototype);
+Eth.constructor = Eth;
 
 try {
   ethAbi = require('ethereumjs-abi');
@@ -49,56 +45,67 @@ Eth.prototype.isValidAddress = function(address) {
   return ethUtil.isValidAddress(ethUtil.addHexPrefix(address));
 };
 
-const getOperationSha3ForExecuteAndConfirm = (recipients, expireTime, contractSequenceId) => {
+/**
+ * Get transfer operation for coin
+ * @param recipient recipient info
+ * @param expireTime expiry time
+ * @param contractSequenceId sequence id
+ * @returns {Array} operation array
+ */
+Eth.prototype.getOperation = function(recipient, expireTime, contractSequenceId) {
+  return [
+    ['string', 'address', 'uint', 'string', 'uint', 'uint'],
+    [
+      'ETHER',
+      new ethUtil.BN(ethUtil.stripHexPrefix(recipient.address), 16),
+      recipient.amount,
+      ethUtil.stripHexPrefix(recipient.data) || '',
+      expireTime,
+      contractSequenceId
+    ]
+  ];
+};
+
+Eth.prototype.getOperationSha3ForExecuteAndConfirm = function(recipients, expireTime, contractSequenceId) {
   if (!recipients || !Array.isArray(recipients)) {
     throw new Error('expecting array of recipients');
   }
 
   // Right now we only support 1 recipient
   if (recipients.length !== 1) {
-    throw new Error("must send to exactly 1 recipient");
+    throw new Error('must send to exactly 1 recipient');
   }
 
-  if (typeof(expireTime) !== 'number') {
-    throw new Error("expireTime must be number of seconds since epoch");
+  if (!_.isNumber(expireTime)) {
+    throw new Error('expireTime must be number of seconds since epoch');
   }
 
-  if (typeof(contractSequenceId) !== 'number') {
-    throw new Error("contractSequenceId must be number");
+  if (!_.isNumber(contractSequenceId)) {
+    throw new Error('contractSequenceId must be number');
   }
 
   // Check inputs
   recipients.forEach(function(recipient) {
-    if (typeof(recipient.address) !== 'string' || !ethUtil.isValidAddress(ethUtil.addHexPrefix(recipient.address))) {
-      throw new Error("Invalid address: " + recipient.address);
+    if (!_.isString(recipient.address) || !ethUtil.isValidAddress(ethUtil.addHexPrefix(recipient.address))) {
+      throw new Error('Invalid address: ' + recipient.address);
     }
 
     let amount;
     try {
       amount = new BigNumber(recipient.amount);
     } catch (e) {
-      throw new Error("Invalid amount for: " + recipient.address + ' - should be numeric');
+      throw new Error('Invalid amount for: ' + recipient.address + ' - should be numeric');
     }
 
     recipient.amount = amount.toFixed(0);
 
-    if (recipient.data && typeof(recipient.data) !== 'string') {
-      throw new Error("Data for recipient " + recipient.address + ' - should be of type hex string');
+    if (recipient.data && !_.isString(recipient.data)) {
+      throw new Error('Data for recipient ' + recipient.address + ' - should be of type hex string');
     }
   });
 
   const recipient = recipients[0];
-  return ethUtil.bufferToHex(ethAbi.soliditySHA3(
-  ["string", "address", "uint", "string", "uint", "uint"],
-  [
-    "ETHER",
-    new ethUtil.BN(ethUtil.stripHexPrefix(recipient.address), 16),
-    recipient.amount,
-    ethUtil.stripHexPrefix(recipient.data) || '',
-    expireTime,
-    contractSequenceId
-  ]
-  ));
+  return ethUtil.bufferToHex(ethAbi.soliditySHA3(...this.getOperation(recipient, expireTime, contractSequenceId)));
 };
 
 /**
@@ -113,22 +120,34 @@ Eth.prototype.signTransaction = function(params) {
   const userPrv = params.prv;
   const EXPIRETIME_DEFAULT = 60 * 60 * 24 * 7; // This signature will be valid for 1 week
 
-  var secondsSinceEpoch = Math.floor((new Date().getTime()) / 1000);
-  var expireTime = params.expireTime || secondsSinceEpoch + EXPIRETIME_DEFAULT;
+  const secondsSinceEpoch = Math.floor((new Date().getTime()) / 1000);
+  const expireTime = params.expireTime || secondsSinceEpoch + EXPIRETIME_DEFAULT;
 
-  var operationHash = getOperationSha3ForExecuteAndConfirm(params.recipients, expireTime, txPrebuild.nextContractSequenceId);
-  var signature = Util.ethSignMsgHash(operationHash, Util.xprvToEthPrivateKey(userPrv));
+  const operationHash = this.getOperationSha3ForExecuteAndConfirm(params.recipients, expireTime, txPrebuild.nextContractSequenceId);
+  const signature = Util.ethSignMsgHash(operationHash, Util.xprvToEthPrivateKey(userPrv));
 
-  var txParams = {
+  const txParams = {
     recipients: params.recipients,
     expireTime: expireTime,
     contractSequenceId: txPrebuild.nextContractSequenceId,
     sequenceId: params.sequenceId,
     operationHash: operationHash,
     signature: signature,
-    gasLimit: params.gasLimit
+    gasLimit: params.gasLimit,
+    gasPrice: params.gasPrice
   };
   return { halfSigned: txParams };
+};
+
+/**
+ * Ensure the enterprise is passed, so we can use the correct Enterprise fee address
+ * @param params
+ * @param params.enterprise {String} the enterprise id to associate with this key
+ */
+Eth.prototype.preCreateBitGo = function(params) {
+  if (!params || !params.enterprise) {
+    throw new Error('expecting enterprise when adding BitGo key');
+  }
 };
 
 module.exports = Eth;

@@ -5,18 +5,17 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var bitcoin = require('../bitcoin');
-var EthWallet = require('./ethWallet');
-var common = require('../common');
-var Util = require('../util');
-var Q = require('q');
-var _ = require('lodash');
+const EthWallet = require('./ethWallet');
+const common = require('../common');
+const Util = require('../util');
+const Promise = require('bluebird');
+const _ = require('lodash');
 
 //
 // Constructor
 // TODO: WORK IN PROGRESS
 //
-var EthWallets = function(bitgo) {
+const EthWallets = function(bitgo) {
   this.bitgo = bitgo;
 };
 
@@ -28,26 +27,26 @@ EthWallets.prototype.list = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], [], callback);
 
-  var args = [];
+  const args = [];
 
   if (params.skip && params.prevId) {
     throw new Error('cannot specify both skip and prevId');
   }
 
   if (params.limit) {
-    if (typeof(params.limit) != 'number') {
+    if (!_.isNumber(params.limit)) {
       throw new Error('invalid limit argument, expecting number');
     }
     args.push('limit=' + params.limit);
   }
   if (params.getbalances) {
-    if (typeof(params.getbalances) != 'boolean') {
+    if (!_.isBoolean(params.getbalances)) {
       throw new Error('invalid getbalances argument, expecting boolean');
     }
     args.push('getbalances=' + params.getbalances);
   }
   if (params.skip) {
-    if (typeof(params.skip) != 'number') {
+    if (!_.isNumber(params.skip)) {
       throw new Error('invalid skip argument, expecting number');
     }
     args.push('skip=' + params.skip);
@@ -55,12 +54,12 @@ EthWallets.prototype.list = function(params, callback) {
     args.push('prevId=' + params.prevId);
   }
 
-  var query = '';
+  let query = '';
   if (args.length) {
     query = '?' + args.join('&');
   }
 
-  var self = this;
+  const self = this;
   return this.bitgo.get(this.bitgo.url('/eth/wallet' + query))
   .result()
   .then(function(body) {
@@ -76,9 +75,9 @@ EthWallets.prototype.getWallet = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['id'], [], callback);
 
-  var self = this;
+  const self = this;
 
-  var query = '';
+  let query = '';
   if (params.gpk) {
     query = '?gpk=1';
   }
@@ -121,35 +120,35 @@ EthWallets.prototype.getWallet = function(params, callback) {
 EthWallets.prototype.generateWallet = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['passphrase', 'label'], ['backupAddress', 'backupXpub', 'backupXpubProvider', 'enterprise'], callback);
-  var self = this;
+  const self = this;
 
   if ((!!params.backupAddress + !!params.backupXpub + !!params.backupXpubProvider) > 1) {
-    throw new Error("Cannot provide more than one backupAddress or backupXpub or backupXpubProvider flag");
+    throw new Error('Cannot provide more than one backupAddress or backupXpub or backupXpubProvider flag');
   }
 
-  if (params.disableTransactionNotifications !== undefined && typeof(params.disableTransactionNotifications) != 'boolean') {
+  if (params.disableTransactionNotifications !== undefined && !_.isBoolean(params.disableTransactionNotifications)) {
     throw new Error('Expected disableTransactionNotifications to be a boolean. ');
   }
 
-  var userKeychain;
-  var userAddress;
-  var backupKeychain;
-  var backupAddress;
-  var bitgoAddress;
+  let userKeychain;
+  let userAddress;
+  let backupKeychain;
+  let backupAddress;
+  let bitgoAddress;
 
   // Add the user keychain
-  var userKeychainPromise = Q.fcall(function() {
+  const userKeychainPromise = Promise.try(function() {
     // Create the user and backup key.
     userKeychain = self.bitgo.keychains().create();
     userKeychain.encryptedXprv = self.bitgo.encrypt({ password: params.passphrase, input: userKeychain.xprv });
     userAddress = Util.xpubToEthAddress(userKeychain.xpub);
     return self.bitgo.keychains().add({
-      "xpub": userKeychain.xpub,
-      "encryptedXprv": userKeychain.encryptedXprv
+      xpub: userKeychain.xpub,
+      encryptedXprv: userKeychain.encryptedXprv
     });
   });
 
-  var backupKeychainPromise = Q.fcall(function() {
+  const backupKeychainPromise = Promise.try(function() {
     if (params.backupXpubProvider) {
       // If requested, use a KRS or backup key provider
       return self.bitgo.keychains().createBackup({
@@ -168,7 +167,7 @@ EthWallets.prototype.generateWallet = function(params, callback) {
     // User provided backup xpub
     if (params.backupXpub) {
       // user provided backup ethereum address
-      backupKeychain = { 'xpub': params.backupXpub };
+      backupKeychain = { xpub: params.backupXpub };
     } else {
       // No provided backup xpub or address, so default to creating one here
       backupKeychain = self.bitgo.keychains().create();
@@ -189,15 +188,15 @@ EthWallets.prototype.generateWallet = function(params, callback) {
     }
   });
 
-  var bitgoKeychainPromise = self.bitgo.keychains().createBitGo({ type: 'eth' })
+  const bitgoKeychainPromise = self.bitgo.keychains().createBitGo({ type: 'eth' })
   .then(function(keychain) {
     bitgoAddress = keychain.ethAddress;
   });
 
   // parallelize the independent keychain retrievals/syncs
-  return Q.all([userKeychainPromise, backupKeychainPromise, bitgoKeychainPromise])
+  return Promise.all([userKeychainPromise, backupKeychainPromise, bitgoKeychainPromise])
   .then(function() {
-    var walletParams = {
+    const walletParams = {
       m: 2,
       n: 3,
       addresses: [
@@ -212,7 +211,7 @@ EthWallets.prototype.generateWallet = function(params, callback) {
     return self.add(walletParams);
   })
   .then(function(newWallet) {
-    var result = {
+    const result = {
       wallet: newWallet,
       userKeychain: userKeychain,
       backupKeychain: backupKeychain
@@ -240,26 +239,26 @@ EthWallets.prototype.add = function(params, callback) {
   params = params || {};
   common.validateParams(params, [], ['label', 'enterprise'], callback);
 
-  if (Array.isArray(params.addresses) === false || typeof(params.m) !== 'number' ||
-  typeof(params.n) != 'number') {
+  if (Array.isArray(params.addresses) === false || !_.isNumber(params.m) ||
+  !_.isNumber(params.n)) {
     throw new Error('invalid argument');
   }
 
   // lowercase the addresses
   params.addresses = _.invokeMap(params.addresses, 'toLowerCase');
 
-  if (params.m != 2 || params.n != 3) {
+  if (params.m !== 2 || params.n !== 3) {
     throw new Error('unsupported multi-sig type');
   }
 
-  var self = this;
-  var walletParams = _.extend({ type: 'eth' }, params);
+  const self = this;
+  const walletParams = _.extend({ type: 'eth' }, params);
 
   return this.bitgo.post(this.bitgo.url('/eth/wallet'))
   .send(walletParams)
   .result()
   .then(function(body) {
-    var serverAddresses = _.map(body.private.addresses, 'address');
+    const serverAddresses = _.map(body.private.addresses, 'address');
     if (!_.isEqual(walletParams.addresses, serverAddresses)) {
       throw new Error('server addresses do not match');
     }

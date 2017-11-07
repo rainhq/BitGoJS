@@ -1,60 +1,73 @@
-var Keychains;
-var BigNumber = require('bignumber.js');
-var PendingApprovals;
-var Wallet;
-var Wallets;
-var coinInstances;
-var bitcoin = require('bitcoinjs-lib');
-var prova = require('../prova');
-var Q = require('q');
-var sjcl = require('../sjcl.min');
+let Keychains;
+const BigNumber = require('bignumber.js');
+let PendingApprovals;
+let Wallet;
+let Wallets;
+let Markets;
+let Token;
+let coinGenerators;
+const bitcoin = require('bitcoinjs-lib');
+const prova = require('../prova');
+const Promise = require('bluebird');
+const sjcl = require('../sjcl.min');
 
-var BaseCoin = function(bitgo, coin) {
-  this.bitgo = bitgo;
-  this.initializeCoin(coin);
+const BaseCoin = function(bitgo, coin) {
+  const coinInstance = BaseCoin.initializeCoin(coin, bitgo);
+  coinInstance.bitgo = bitgo;
 
-  var self = this;
-  this.type = coin;
+  coinInstance.type = coin;
 
-  this.url = (suffix) => {
-    return bitgo._baseUrl + '/api/v2/' + this.getChain() + suffix;
+  coinInstance.url = (suffix) => {
+    return bitgo._baseUrl + '/api/v2/' + coinInstance.getChain() + suffix;
   };
 
-  this.wallets = function() {
-    if (!self.coinWallets) {
+  coinInstance.wallets = function() {
+    if (!coinInstance.coinWallets) {
       if (!Wallets) {
         Wallets = require('./wallets');
       }
-      self.coinWallets = new Wallets(bitgo, this);
+      coinInstance.coinWallets = new Wallets(bitgo, coinInstance);
     }
-    return self.coinWallets;
+    return coinInstance.coinWallets;
   };
 
-  this.keychains = function() {
-    if (!self.coinKeychains) {
+  coinInstance.keychains = function() {
+    if (!coinInstance.coinKeychains) {
       if (!Keychains) {
         Keychains = require('./keychains');
       }
-      self.coinKeychains = new Keychains(bitgo, this);
+      coinInstance.coinKeychains = new Keychains(bitgo, coinInstance);
     }
-    return self.coinKeychains;
+    return coinInstance.coinKeychains;
   };
 
-  this.pendingApprovals = function() {
-    if (!self.coinPendingApprovals) {
+  coinInstance.pendingApprovals = function() {
+    if (!coinInstance.coinPendingApprovals) {
       if (!PendingApprovals) {
         PendingApprovals = require('./pendingApprovals');
       }
-      self.coinPendingApprovals = new PendingApprovals(bitgo, this);
+      coinInstance.coinPendingApprovals = new PendingApprovals(bitgo, coinInstance);
     }
-    return self.coinPendingApprovals;
+    return coinInstance.coinPendingApprovals;
   };
+
+  coinInstance.markets = function() {
+    if (!coinInstance.coinMarkets) {
+      if (!Markets) {
+        Markets = require('./markets');
+      }
+      coinInstance.coinMarkets = new Markets(bitgo, this);
+    }
+    return coinInstance.coinMarkets;
+  };
+
+  return coinInstance;
 };
 
-BaseCoin.prototype.initializeCoin = function(coin) {
-  if (!coinInstances) {
+BaseCoin.initializeCoin = function(coin, bitgo) {
+  if (!coinGenerators) {
     // initialization has to be asynchronous to avoid circular dependencies
-    coinInstances = {
+    coinGenerators = {
       btc: require('./coins/btc'),
       tbtc: require('./coins/tbtc'),
       bch: require('./coins/bch'),
@@ -69,12 +82,22 @@ BaseCoin.prototype.initializeCoin = function(coin) {
       txrp: require('./coins/txrp')
     };
   }
-
-  var coinInstance = coinInstances[coin];
-  if (!coinInstance) {
-    throw new Error('Coin type ' + coin + ' not supported');
+  if (!Token) {
+    Token = require('./coins/token');
   }
-  coinInstance.call(this);
+
+  const tokens = bitgo.getConstants().eth.tokens;
+  tokens.forEach((token) => {
+    if (!coinGenerators[token.type]) {
+      coinGenerators[token.type] = Token(token);
+    }
+  });
+
+  const CoinGenerator = coinGenerators[coin];
+  if (!CoinGenerator) {
+    throw new Error('Coin or token type ' + coin + ' not supported');
+  }
+  return new CoinGenerator();
 };
 
 /**
@@ -92,9 +115,9 @@ BaseCoin.prototype.baseUnitsToBigUnits = function(baseUnits) {
  * @param walletParams
  * @return {*}
  */
-BaseCoin.prototype.supplementGenerateWallet = function(walletParams) {
+BaseCoin.prototype.supplementGenerateWallet = Promise.method(function(walletParams) {
   return walletParams;
-};
+});
 
 BaseCoin.prototype.newWalletObject = function(walletParams) {
   if (!Wallet) {
@@ -122,6 +145,15 @@ BaseCoin.prototype.deriveKeyWithSeed = function({ key, seed }) {
   };
 };
 
+/**
+ * Perform additional checks before adding a bitgo key. Base controller
+ * is a no-op, but coin-specific controller may do something
+ * @param params
+ */
+BaseCoin.prototype.preCreateBitGo = function(params) {
+  return;
+};
+
 BaseCoin.prototype.initiateRecovery = function(params) {
   const keys = [];
   const userKey = params.userKey; // Box A
@@ -136,14 +168,14 @@ BaseCoin.prototype.initiateRecovery = function(params) {
         userKey = sjcl.decrypt(passphrase, userKey);
       }
       const userHDNode = prova.HDNode.fromBase58(userKey);
-      return Q(userHDNode);
+      return Promise.resolve(userHDNode);
     } catch (e) {
       throw new Error('Failed to decrypt user key with passcode - try again!');
     }
   };
 
   const self = this;
-  return Q.try(function() {
+  return Promise.try(function() {
     // TODO: Arik add Ledger support
     return validatePassphraseKey(userKey, passphrase);
   })

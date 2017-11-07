@@ -1,6 +1,5 @@
-const BaseCoin = require('../baseCoin');
+const baseCoinPrototype = require('../baseCoin').prototype;
 const BigNumber = require('bignumber.js');
-const crypto = require('crypto');
 const querystring = require('querystring');
 const ripple = require('../../ripple');
 const rippleAddressCodec = require('ripple-address-codec');
@@ -9,19 +8,18 @@ const rippleHashes = require('ripple-hashes');
 const rippleKeypairs = require('ripple-keypairs');
 const url = require('url');
 const prova = require('../../prova');
-const Q = require('q');
-const common = require('../../common');
-const _ = require('lodash');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
 
 const Xrp = function() {
   // this function is called externally from BaseCoin
   // replace the BaseCoin prototype with the local override prototype, which inherits from BaseCoin
   // effectively, move the BaseCoin prototype one level away
-  this.__proto__ = Xrp.prototype;
   // TODO: replace dependency with platform IMS
 };
 
-Xrp.prototype.__proto__ = BaseCoin.prototype;
+Xrp.prototype = Object.create(baseCoinPrototype);
+Xrp.constructor = Xrp;
 
 /**
  * Returns the factor between the base unit and its smallest subdivison
@@ -60,7 +58,7 @@ Xrp.prototype.isValidAddress = function(address) {
     return false;
   }
 
-  const parsedTag = parseInt(queryDetails.dt);
+  const parsedTag = parseInt(queryDetails.dt, 10);
   if (!Number.isSafeInteger(parsedTag)) {
     return false;
   }
@@ -113,7 +111,7 @@ Xrp.prototype.signTransaction = function(params) {
  * @param keychains
  * @return {*|Request|Promise.<TResult>|{anyOf}}
  */
-Xrp.prototype.supplementGenerateWallet = function(walletParams, keychains) {
+Xrp.prototype.supplementGenerateWallet = co(function *(walletParams, keychains) {
   const { userKeychain, backupKeychain, bitgoKeychain } = keychains;
 
   const userKey = prova.HDNode.fromBase58(userKeychain.pub).getKey();
@@ -138,85 +136,79 @@ Xrp.prototype.supplementGenerateWallet = function(walletParams, keychains) {
   const publicKey = keyPair.getPublicKeyBuffer();
   const rootAddress = rippleKeypairs.deriveAddress(publicKey.toString('hex'));
 
-  let signedMultisigAssignmentTx;
-  let signedMasterDeactivationTx;
-  let signedDestinationTagTx;
-
   const self = this;
   const rippleLib = ripple();
 
-  return self.getFeeInfo()
-  .then(function(feeInfo) {
-    // TODO: get recommended fee from server instead of doing number magic
-    const fee = new BigNumber(feeInfo.xrpOpenLedgerFee).times(1.5).toFixed(0);
-    const ledgerVersion = feeInfo.height;
+  const feeInfo = yield self.getFeeInfo();
+  const openLedgerFee = new BigNumber(feeInfo.xrpOpenLedgerFee);
+  const medianFee = new BigNumber(feeInfo.xrpMedianFee);
+  const fee = BigNumber.max(openLedgerFee, medianFee).times(1.5).toFixed(0);
 
-    // configure multisigners
-    const multisigAssignmentTx = {
-      TransactionType: 'SignerListSet',
-      Account: rootAddress,
-      SignerQuorum: 2,
-      SignerEntries: [
-        {
-          SignerEntry: {
-            Account: userAddress,
-            SignerWeight: 1
-          }
-        },
-        {
-          SignerEntry: {
-            Account: backupAddress,
-            SignerWeight: 1
-          }
-        },
-        {
-          SignerEntry: {
-            Account: bitgoAddress,
-            SignerWeight: 1
-          }
+  // configure multisigners
+  const multisigAssignmentTx = {
+    TransactionType: 'SignerListSet',
+    Account: rootAddress,
+    SignerQuorum: 2,
+    SignerEntries: [
+      {
+        SignerEntry: {
+          Account: userAddress,
+          SignerWeight: 1
         }
-      ],
-      Flags: 2147483648,
-      // LastLedgerSequence: ledgerVersion + 10,
-      Fee: fee,
-      Sequence: 1
-    };
-    signedMultisigAssignmentTx = rippleLib.signWithPrivateKey(JSON.stringify(multisigAssignmentTx), privateKey.toString('hex'));
+      },
+      {
+        SignerEntry: {
+          Account: backupAddress,
+          SignerWeight: 1
+        }
+      },
+      {
+        SignerEntry: {
+          Account: bitgoAddress,
+          SignerWeight: 1
+        }
+      }
+    ],
+    Flags: 2147483648,
+    // LastLedgerSequence: ledgerVersion + 10,
+    Fee: fee,
+    Sequence: 1
+  };
+  const signedMultisigAssignmentTx = rippleLib.signWithPrivateKey(JSON.stringify(multisigAssignmentTx), privateKey.toString('hex'));
 
-    // enforce destination tags
-    const destinationTagTx = {
-      TransactionType: 'AccountSet',
-      Account: rootAddress,
-      SetFlag: 1,
-      Flags: 2147483648,
-      // LastLedgerSequence: ledgerVersion + 10,
-      Fee: fee,
-      Sequence: 2
-    };
-    signedDestinationTagTx = rippleLib.signWithPrivateKey(JSON.stringify(destinationTagTx), privateKey.toString('hex'));
+  // enforce destination tags
+  const destinationTagTx = {
+    TransactionType: 'AccountSet',
+    Account: rootAddress,
+    SetFlag: 1,
+    Flags: 2147483648,
+    // LastLedgerSequence: ledgerVersion + 10,
+    Fee: fee,
+    Sequence: 2
+  };
+  const signedDestinationTagTx = rippleLib.signWithPrivateKey(JSON.stringify(destinationTagTx), privateKey.toString('hex'));
 
-    // disable master key
-    const masterDeactivationTx = {
-      TransactionType: 'AccountSet',
-      Account: rootAddress,
-      SetFlag: 4,
-      Flags: 2147483648,
-      // LastLedgerSequence: ledgerVersion + 10,
-      Fee: fee,
-      Sequence: 3
-    };
-    signedMasterDeactivationTx = rippleLib.signWithPrivateKey(JSON.stringify(masterDeactivationTx), privateKey.toString('hex'));
+  // disable master key
+  const masterDeactivationTx = {
+    TransactionType: 'AccountSet',
+    Account: rootAddress,
+    SetFlag: 4,
+    Flags: 2147483648,
+    // LastLedgerSequence: ledgerVersion + 10,
+    Fee: fee,
+    Sequence: 3
+  };
+  const signedMasterDeactivationTx = rippleLib.signWithPrivateKey(JSON.stringify(masterDeactivationTx), privateKey.toString('hex'));
 
-    // extend the wallet initialization params
-    walletParams.rootPub = publicKey.toString('hex');
-    walletParams.initializationTxs = {
-      setMultisig: signedMultisigAssignmentTx.signedTransaction,
-      disableMasterKey: signedMasterDeactivationTx.signedTransaction,
-      forceDestinationTag: signedDestinationTagTx.signedTransaction
-    };
-    return walletParams;
-  });
-};
+  // extend the wallet initialization params
+  walletParams.rootPub = publicKey.toString('hex');
+  walletParams.initializationTxs = {
+    setMultisig: signedMultisigAssignmentTx.signedTransaction,
+    disableMasterKey: signedMasterDeactivationTx.signedTransaction,
+    forceDestinationTag: signedDestinationTagTx.signedTransaction
+  };
+  return walletParams;
+});
 
 /**
  * Explain/parse transaction
@@ -226,18 +218,21 @@ Xrp.prototype.supplementGenerateWallet = function(walletParams, keychains) {
  */
 Xrp.prototype.explainTransaction = function(params) {
   let transaction;
+  let txHex;
   try {
     transaction = rippleBinaryCodec.decode(params.txHex);
+    txHex = params.txHex;
   } catch (e) {
     try {
       transaction = JSON.parse(params.txHex);
+      txHex = rippleBinaryCodec.encode(transaction);
     } catch (e) {
       throw new Error('txHex needs to be either hex or JSON string for XRP');
     }
   }
-  var id = rippleHashes.computeBinaryTransactionHash(params.txHex);
-  var changeAmount = 0;
-  var explanation = {
+  const id = rippleHashes.computeBinaryTransactionHash(txHex);
+  const changeAmount = 0;
+  const explanation = {
     displayOrder: ['id', 'outputAmount', 'changeAmount', 'outputs', 'changeOutputs', 'fee'],
     id: id,
     outputs: [],
@@ -252,7 +247,8 @@ Xrp.prototype.explainTransaction = function(params) {
   explanation.changeAmount = changeAmount;
 
   explanation.fee = {
-    miner: transaction.Fee
+    miner: transaction.Fee,
+    size: txHex.length / 2
   };
   return explanation;
 };
@@ -366,7 +362,7 @@ Xrp.prototype.recover = function(params, callback) {
     const queryDetails = querystring.parse(destinationDetails.query);
     const destinationAddress = destinationDetails.pathname;
     let destinationTag = undefined;
-    const parsedTag = parseInt(queryDetails.dt);
+    const parsedTag = parseInt(queryDetails.dt, 10);
     if (Number.isInteger(parsedTag)) {
       destinationTag = parsedTag;
     }

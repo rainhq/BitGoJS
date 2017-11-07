@@ -1,17 +1,15 @@
-var BaseCoin = require('../baseCoin');
-var common = require('../../common');
-var prova = require('../../prova');
-var _ = require('lodash');
+const baseCoinPrototype = require('../baseCoin').prototype;
+const prova = require('../../prova');
 
-var Rmg = function() {
+const Rmg = function() {
   // this function is called externally from BaseCoin
   // replace the BaseCoin prototype with the local override prototype, which inherits from BaseCoin
   // effectively, move the BaseCoin prototype one level away
-  this.__proto__ = Rmg.prototype;
   this.network = prova.networks.rmg;
 };
 
-Rmg.prototype.__proto__ = BaseCoin.prototype;
+Rmg.prototype = Object.create(baseCoinPrototype);
+Rmg.constructor = Rmg;
 
 /**
  * Returns the factor between the base unit and its smallest subdivison
@@ -40,33 +38,56 @@ Rmg.prototype.isValidAddress = function(address) {
  * @returns {{txHex}}
  */
 Rmg.prototype.signTransaction = function(params) {
-  var txPrebuild = params.txPrebuild;
-  var userPrv = params.prv;
+  const txPrebuild = params.txPrebuild;
+  const userPrv = params.prv;
 
-  var transaction = prova.Transaction.fromHex(txPrebuild.txHex);
+  let transaction = prova.Transaction.fromHex(txPrebuild.txHex);
 
   if (transaction.ins.length !== txPrebuild.txInfo.unspents.length) {
     throw new Error('length of unspents array should equal to the number of transaction inputs');
   }
 
-  var keychain = prova.HDNode.fromBase58(userPrv, this.network);
-  var hdPath = keychain.hdPath();
+  const keychain = prova.HDNode.fromBase58(userPrv, this.network);
+  const hdPath = keychain.hdPath();
 
-  for (var index = 0; index < transaction.ins.length; ++index) {
-    var currentUnspent = txPrebuild.txInfo.unspents[index];
-    var path = "m/0/0/" + currentUnspent.chain + "/" + currentUnspent.index;
-    var privKey = hdPath.deriveKey(path);
+  const signatureIssues = [];
 
-    var unspentAddress = prova.Address.fromBase58(currentUnspent.address);
-    var subscript = unspentAddress.toScript();
-    var txb = prova.TransactionBuilder.fromTransaction(transaction, this.network);
+  for (let index = 0; index < transaction.ins.length; ++index) {
+    const currentUnspent = txPrebuild.txInfo.unspents[index];
+    const path = 'm/0/0/' + currentUnspent.chain + '/' + currentUnspent.index;
+    const privKey = hdPath.deriveKey(path);
+
+    const currentSignatureIssue = {
+      inputIndex: index,
+      unspent: currentUnspent,
+      path: path
+    };
+
+    const unspentAddress = prova.Address.fromBase58(currentUnspent.address);
+    const subscript = unspentAddress.toScript();
+    const txb = prova.TransactionBuilder.fromTransaction(transaction, this.network);
     try {
       txb.sign(index, privKey, subscript, currentUnspent.value);
     } catch (e) {
-      throw new Error('Failed to sign input #' + index);
+      currentSignatureIssue.error = e;
+      signatureIssues.push(currentSignatureIssue);
+      continue;
     }
 
     transaction = txb.buildIncomplete();
+    const isValidSignature = this.verifySignature(transaction, index, currentUnspent.value);
+    if (!isValidSignature) {
+      currentSignatureIssue.error = new Error('invalid signature');
+      signatureIssues.push(currentSignatureIssue);
+    }
+  }
+
+  if (signatureIssues.length > 0) {
+    const failedIndices = signatureIssues.map(currentIssue => currentIssue.inputIndex);
+    const error = new Error(`Failed to sign inputs at indices ${failedIndices.join(', ')}`);
+    error.code = 'input_signature_failure';
+    error.signingErrors = signatureIssues;
+    throw error;
   }
 
   return {
@@ -74,25 +95,34 @@ Rmg.prototype.signTransaction = function(params) {
   };
 };
 
+Rmg.prototype.verifySignature = function(transaction, inputIndex, amount) {
+  const currentInput = transaction.ins[inputIndex];
+  const signatureScript = currentInput.script;
+  const [publicKeyBuffer, signatureBuffer] = prova.script.decompile(signatureScript);
+  const publicKey = prova.ECPair.fromPublicKeyBuffer(publicKeyBuffer);
+  const signatureHash = transaction.hashForWitnessV0(inputIndex, null, amount, prova.Transaction.SIGHASH_ALL);
+  return publicKey.verify(signatureHash, signatureBuffer);
+};
+
 Rmg.prototype.explainTransaction = function(params) {
-  var self = this;
-  var transaction = prova.Transaction.fromHex(params.txHex);
-  var id = transaction.getId();
-  var changeAddresses = [];
-  var spendAmount = 0;
-  var changeAmount = 0;
+  const self = this;
+  const transaction = prova.Transaction.fromHex(params.txHex);
+  const id = transaction.getId();
+  let changeAddresses = [];
+  let spendAmount = 0;
+  let changeAmount = 0;
   if (params.txInfo && params.txInfo.changeAddresses) {
     changeAddresses = params.txInfo.changeAddresses;
   }
-  var explanation = {
+  const explanation = {
     displayOrder: ['id', 'outputAmount', 'changeAmount', 'outputs', 'changeOutputs'],
     id: id,
     outputs: [],
     changeOutputs: []
   };
   transaction.outs.forEach(function(currentOutput) {
-    var currentAddress = prova.Address.fromScript(currentOutput.script, self.network).toString();
-    var currentAmount = currentOutput.value;
+    const currentAddress = prova.Address.fromScript(currentOutput.script, self.network).toString();
+    const currentAmount = currentOutput.value;
 
     if (changeAddresses.indexOf(currentAddress) !== -1) {
       // this is change

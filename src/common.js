@@ -1,4 +1,5 @@
-var bitcoin = require('bitcoinjs-lib');
+const bitcoin = require('bitcoinjs-lib');
+const _ = require('lodash');
 
 exports.Environments = {
   prod: {
@@ -84,6 +85,18 @@ exports.Environments = {
     serverXpub: 'xpub661MyMwAqRbcErFqVXGiUFv9YeoPbhN72UiNCUdj9nj3T6M8h7iKNmbCYpMVWVZP7LA2ma3HWcPngz1gRTm4FPdtm9mHfrNvU93MCoszsGL',
     blockrApiBaseUrl: 'https://tbtc.blockr.io/api/v1'
   },
+  latest: {
+    uri: 'https://latest.bitgo.com',
+    networks: {
+      tbtc: bitcoin.networks.testnet
+    },
+    network: 'testnet',
+    ethNetwork: 'ethereum',
+    rmgNetwork: 'rmgTest',
+    signingAddress: 'msignBdFXteehDEgB6DNm7npRt7AcEZJP3',
+    serverXpub: 'xpub661MyMwAqRbcErFqVXGiUFv9YeoPbhN72UiNCUdj9nj3T6M8h7iKNmbCYpMVWVZP7LA2ma3HWcPngz1gRTm4FPdtm9mHfrNvU93MCoszsGL',
+    blockrApiBaseUrl: 'https://tbtc.blockr.io/api/v1'
+  },
   rmgDev: {
     uri: 'https://rmgwebdev.bitgo.com',
     networks: {
@@ -124,7 +137,7 @@ exports.Environments = {
     uri: process.env.BITGO_CUSTOM_ROOT_URI,
     networks: {
       btc: bitcoin.networks.bitcoin,
-      tbtc: bitcoin.networks.testnet,
+      tbtc: bitcoin.networks.testnet
     },
     network: process.env.BITGO_CUSTOM_BITCOIN_NETWORK || 'bitcoin',
     ethNetwork: process.env.BITGO_CUSTOM_ETHEREUM_NETWORK || 'ethereum',
@@ -135,12 +148,12 @@ exports.Environments = {
   }
 };
 
-var bitcoinNetwork;
-var ethereumNetwork;
-var rmgNetwork;
+let bitcoinNetwork;
+let ethereumNetwork;
+let rmgNetwork;
 
 exports.setNetwork = function(network) {
-  if (network == 'bitcoin') {
+  if (network === 'bitcoin') {
     bitcoinNetwork = 'bitcoin';
   } else {
     // test network
@@ -152,7 +165,7 @@ exports.getNetwork = function() {
   return bitcoinNetwork;
 };
 
-exports.getRmgNetwork = function(){
+exports.getRmgNetwork = function() {
   return rmgNetwork;
 };
 
@@ -179,7 +192,7 @@ exports.getEthNetwork = function() {
  * @returns {boolean} true if validated, throws with reason otherwise
  */
 exports.validateParams = function(params, expectedParams, optionalParams, optionalCallback) {
-  if (typeof(params) != 'object') {
+  if (!_.isObject(params)) {
     throw new Error('Must pass in parameters dictionary');
   }
 
@@ -189,19 +202,19 @@ exports.validateParams = function(params, expectedParams, optionalParams, option
     if (!params[expectedParam]) {
       throw new Error('Missing parameter: ' + expectedParam);
     }
-    if (typeof(params[expectedParam]) != 'string') {
+    if (!_.isString(params[expectedParam])) {
       throw new Error('Expecting parameter string: ' + expectedParam + ' but found ' + typeof(params[expectedParam]));
     }
   });
 
   optionalParams = optionalParams || [];
   optionalParams.forEach(function(optionalParam) {
-    if (params[optionalParam] && typeof(params[optionalParam]) != 'string') {
+    if (params[optionalParam] && !_.isString(params[optionalParam])) {
       throw new Error('Expecting parameter string: ' + optionalParam + ' but found ' + typeof(params[optionalParam]));
     }
   });
 
-  if (optionalCallback && typeof(optionalCallback) != 'function') {
+  if (optionalCallback && !_.isFunction(optionalCallback)) {
     throw new Error('illegal callback argument');
   }
 

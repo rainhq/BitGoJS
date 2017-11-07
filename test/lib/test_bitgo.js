@@ -4,7 +4,9 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var BitGo = require('../../src/bitgo.js');
+const BitGo = require('../../src/bitgo.js');
+const Promise = require('bluebird');
+const co = Promise.coroutine;
 
 BitGo.TEST_USER = 'tester@bitgo.com';
 
@@ -13,7 +15,7 @@ if (process.env.BITGOJS_TEST_PASSWORD) {
 } else {
   // Test accounts are locked internally to prevent tampering
   // Contact bencxr@fragnetics.com benchan for further help on how to fix this
-  throw new Error("Need to set BITGOJS_TEST_PASSWORD env variable - please see the developer setup docs.");
+  throw new Error('Need to set BITGOJS_TEST_PASSWORD env variable - please see the developer setup docs.');
 }
 
 BitGo.TEST_SHARED_KEY_USER = 'shared_key_test@bitgo.com';
@@ -154,7 +156,7 @@ BitGo.prototype.initializeTestVars = function() {
 // Get an OTP code for the test user.
 //
 BitGo.prototype.testUserOTP = function() {
-  return "0000000";
+  return '0000000';
 };
 
 //
@@ -177,6 +179,19 @@ BitGo.prototype.authenticateSharingTestUser = function(otp, callback) {
     response.should.have.property('user');
   })
   .nodeify(callback);
+};
+
+const fetchConstants = BitGo.prototype.fetchConstants;
+BitGo.prototype.fetchConstants = function(callback) {
+  return co(function *() {
+    yield fetchConstants.call(this);
+    this._constants[this.env].eth = this._constants[this.env].eth || {};
+    this._constants[this.env].eth.tokens = this._constants[this.env].eth.tokens || [];
+    this._constants[this.env].eth.tokens.push({
+      type: 'erc',
+      tokenContractAddress: '0x945ac907cf021a6bcd07852bb3b8c087051706a9'
+    });
+  }).call(this).asCallback(callback);
 };
 
 module.exports = BitGo;

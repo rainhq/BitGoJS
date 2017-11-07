@@ -6,13 +6,12 @@
 //
 
 
-var common = require('./common');
-var Q = require('q');
+const common = require('./common');
 
 //
 // Constructor
 //
-var Markets = function(bitgo) {
+const Markets = function(bitgo) {
   this.bitgo = bitgo;
 };
 
@@ -58,7 +57,7 @@ Markets.prototype.lastDays = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['currencyName'], [], callback);
 
-  var days = !isNaN(parseInt(params.days)) ? parseInt(params.days) : 90;
+  const days = !isNaN(parseInt(params.days, 10)) ? parseInt(params.days, 10) : 90;
 
   if (days && days < 0) {
     throw new Error('must use a non-negative number of days');

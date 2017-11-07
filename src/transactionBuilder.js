@@ -5,12 +5,9 @@
 // Copyright 2014, BitGo, Inc.  All Rights Reserved.
 //
 
-var Q = require('q');
-var bitcoin = require('./bitcoin');
-var bitcoinCash = require('./bitcoinCash');
-var common = require('./common');
-var Util = require('./util');
-var _ = require('lodash');
+const Promise = require('bluebird');
+const bitcoin = require('./bitcoin');
+const _ = require('lodash');
 
 const P2SH_INPUT_SIZE = 295;
 const P2SH_P2WSH_INPUT_SIZE = 139;
@@ -33,46 +30,47 @@ const TX_OVERHEAD_SIZE = 10;
 //   noSplitChange: set to true to disable automatic change splitting for purposes of unspent management
 //   targetWalletUnspents: specify a number of target unspents to maintain in the wallet (currently defaulted to 8 by the server)
 //   validate: extra verification of the change addresses, which is always done server-side and is redundant client-side (defaults true)
-//   minUnspentSize: The minimum use of unspent to use (don't spend dust transactions). Defaults to 0.
+//   minUnspentSize: The minimum size in satoshis of unspent to use (to prevent spending unspents worth less than fee added). Defaults to 0.
 //   feeSingleKeySourceAddress: Use this single key address to pay fees
 //   feeSingleKeyWIF: Use the address based on this private key to pay fees
 exports.createTransaction = function(params) {
-  var minConfirms = params.minConfirms || 0;
-  var validate = params.validate === undefined ? true : params.validate;
-  var recipients = [];
-  var opReturns = [];
-  var extraChangeAmounts = [];
-  var estTxSize;
-  var travelInfos;
+  const minConfirms = params.minConfirms || 0;
+  const validate = params.validate === undefined ? true : params.validate;
+  let recipients = [];
+  let opReturns = [];
+  let extraChangeAmounts = [];
+  let estTxSize;
+  let travelInfos;
 
   // Sanity check the arguments passed in
-  if (typeof(params.wallet) != 'object' ||
-    (params.fee && typeof(params.fee) != 'number') ||
-    (params.feeRate && typeof(params.feeRate) != 'number') ||
-    typeof(minConfirms) != 'number' ||
-    (params.forceChangeAtEnd && typeof(params.forceChangeAtEnd) !== 'boolean') ||
-    (params.changeAddress && typeof(params.changeAddress) !== 'string') ||
-    (params.noSplitChange && typeof(params.noSplitChange) !== 'boolean') ||
-    (params.targetWalletUnspents && typeof(params.targetWalletUnspents) !== 'number') ||
-    (validate && typeof(validate) !== 'boolean') ||
-    (params.enforceMinConfirmsForChange && typeof(params.enforceMinConfirmsForChange) !== 'boolean') ||
-    (params.minUnspentSize && typeof(params.minUnspentSize) !== 'number') ||
-    (params.maxFeeRate && typeof(params.maxFeeRate) !== 'number') ||
-    (params.unspents && params.unspents.length < 1) || // this should be an array and its length must be at least 1
-    (params.feeTxConfirmTarget && typeof(params.feeTxConfirmTarget) !== 'number') ||
-    (params.instant && typeof(params.instant) !== 'boolean') ||
-    (params.bitgoFee && typeof(params.bitgoFee) !== 'object')
+  if (!_.isObject(params.wallet) ||
+    (params.fee && !_.isNumber(params.fee)) ||
+    (params.feeRate && !_.isNumber(params.feeRate)) ||
+    !_.isInteger(minConfirms) ||
+    (params.forceChangeAtEnd && !_.isBoolean(params.forceChangeAtEnd)) ||
+    (params.changeAddress && !_.isString(params.changeAddress)) ||
+    (params.noSplitChange && !_.isBoolean(params.noSplitChange)) ||
+    (params.targetWalletUnspents && !_.isInteger(params.targetWalletUnspents)) ||
+    (validate && !_.isBoolean(validate)) ||
+    (params.enforceMinConfirmsForChange && !_.isBoolean(params.enforceMinConfirmsForChange)) ||
+    (params.minUnspentSize && !_.isNumber(params.minUnspentSize)) ||
+    (params.maxFeeRate && !_.isNumber(params.maxFeeRate)) ||
+    // this should be an array and its length must be at least 1
+    (params.unspents && (!Array.isArray(params.unspents) || params.unspents.length < 1)) ||
+    (params.feeTxConfirmTarget && !_.isInteger(params.feeTxConfirmTarget)) ||
+    (params.instant && !_.isBoolean(params.instant)) ||
+    (params.bitgoFee && !_.isObject(params.bitgoFee))
   ) {
     throw new Error('invalid argument');
   }
 
-  var bitgo = params.wallet.bitgo;
-  var constants = bitgo.getConstants();
+  const bitgo = params.wallet.bitgo;
+  const constants = bitgo.getConstants();
 
   // The user can specify a seperate, single-key wallet for the purposes of paying miner's fees
   // When creating a transaction this can be specified as an input address or the private key in WIF
-  var feeSingleKeySourceAddress;
-  var feeSingleKeyInputAmount = 0;
+  let feeSingleKeySourceAddress;
+  let feeSingleKeyInputAmount = 0;
   if (params.feeSingleKeySourceAddress) {
     try {
       bitcoin.address.fromBase58Check(params.feeSingleKeySourceAddress);
@@ -83,8 +81,7 @@ exports.createTransaction = function(params) {
   }
 
   if (params.feeSingleKeyWIF) {
-    var feeSingleKey;
-    feeSingleKey = bitcoin.ECPair.fromWIF(params.feeSingleKeyWIF, bitcoin.getNetwork());
+    const feeSingleKey = bitcoin.ECPair.fromWIF(params.feeSingleKeyWIF, bitcoin.getNetwork());
     feeSingleKeySourceAddress = feeSingleKey.getAddress();
     // If the user specifies both, check to make sure the feeSingleKeySourceAddress corresponds to the address of feeSingleKeyWIF
     if (params.feeSingleKeySourceAddress &&
@@ -94,18 +91,18 @@ exports.createTransaction = function(params) {
     }
   }
 
-  if (typeof(params.recipients) != 'object') {
+  if (!_.isObject(params.recipients)) {
     throw new Error('recipients must be array of { address: abc, amount: 100000 } objects');
   }
 
-  var feeParamsDefined = (typeof(params.fee) !== 'undefined') +
-    (typeof(params.feeRate) !== 'undefined') +
-    (typeof(params.feeTxConfirmTarget) !== 'undefined');
+  const feeParamsDefined = (!_.isUndefined(params.fee)) +
+    (!_.isUndefined(params.feeRate)) +
+    (!_.isUndefined(params.feeTxConfirmTarget));
   if (feeParamsDefined > 1) {
     throw new Error('cannot specify more than one of fee, feeRate and feeTxConfirmTarget');
   }
 
-  if (typeof(params.maxFeeRate) === 'undefined') {
+  if (_.isUndefined(params.maxFeeRate)) {
     params.maxFeeRate = constants.maxFeeRate;
   }
 
@@ -113,8 +110,8 @@ exports.createTransaction = function(params) {
   if (!(params.recipients instanceof Array)) {
     recipients = [];
     Object.keys(params.recipients).forEach(function(destinationAddress) {
-      var amount = params.recipients[destinationAddress];
-      recipients.push({address: destinationAddress, amount: amount});
+      const amount = params.recipients[destinationAddress];
+      recipients.push({ address: destinationAddress, amount: amount });
     });
   } else {
     recipients = params.recipients;
@@ -124,7 +121,7 @@ exports.createTransaction = function(params) {
     if (!(params.opReturns instanceof Array)) {
       opReturns = [];
       Object.keys(params.opReturns).forEach(function(message) {
-        var amount = params.opReturns[message];
+        const amount = params.opReturns[message];
         opReturns.push({ message, amount });
       });
     } else {
@@ -136,16 +133,16 @@ exports.createTransaction = function(params) {
     throw new Error('must have at least one recipient');
   }
 
-  var fee = params.fee;
-  var feeRate = params.feeRate;
+  let fee = params.fee;
+  let feeRate = params.feeRate;
 
   // Flag indicating whether this class will compute the fee
-  var shouldComputeBestFee = (typeof(fee) == 'undefined');
+  const shouldComputeBestFee = (_.isUndefined(fee));
 
-  var totalOutputAmount = 0;
+  let totalOutputAmount = 0;
 
   recipients.forEach(function(recipient) {
-    if (typeof(recipient.address) == 'string') {
+    if (_.isString(recipient.address)) {
       try {
         bitcoin.address.fromBase58Check(recipient.address);
       } catch (e) {
@@ -154,7 +151,7 @@ exports.createTransaction = function(params) {
       if (!!recipient.script) {
         // A script was provided as well - validate that the address corresponds to that
         if (bitcoin.address.toOutputScript(recipient.address, bitcoin.getNetwork()).toString('hex') !== recipient.script) {
-          throw new Error('both script and address provided but they did not match: ' + recipient.address + " " + recipient.script);
+          throw new Error('both script and address provided but they did not match: ' + recipient.address + ' ' + recipient.script);
         }
       }
     }
@@ -168,41 +165,41 @@ exports.createTransaction = function(params) {
     totalOutputAmount += opReturn.amount;
   });
 
-  var bitgoFeeInfo = params.bitgoFee;
+  let bitgoFeeInfo = params.bitgoFee;
   if (bitgoFeeInfo &&
-    (typeof(bitgoFeeInfo.amount) !== 'number' || typeof(bitgoFeeInfo.address) !== 'string')) {
+    (!_.isInteger(bitgoFeeInfo.amount) || !_.isString(bitgoFeeInfo.address))) {
     throw new Error('invalid bitgoFeeInfo');
   }
 
   // The total amount needed for this transaction.
-  var totalAmount = totalOutputAmount + (fee || 0);
+  let totalAmount = totalOutputAmount + (fee || 0);
 
   // The list of unspent transactions being used in this transaction.
-  var unspents;
+  let unspents;
 
   // the total number of unspents on this wallet
-  var totalUnspentsCount;
+  let totalUnspentsCount;
 
   // the number of unspents we fetched from the server, before filtering
-  var fetchedUnspentsCount;
+  let fetchedUnspentsCount;
 
   // The list of unspent transactions being used with zero-confirmations
-  var zeroConfUnspentTxIds;
+  let zeroConfUnspentTxIds;
 
   // The sum of the input values for this transaction.
-  var inputAmount;
+  let inputAmount;
 
-  var changeOutputs = [];
+  let changeOutputs = [];
 
   // The transaction.
-  var transaction = new bitcoin.TransactionBuilder(bitcoin.getNetwork());
+  let transaction = new bitcoin.TransactionBuilder(bitcoin.getNetwork());
 
-  var getBitGoFee = function() {
-    return Q().then(function() {
+  const getBitGoFee = function() {
+    return Promise.try(function() {
       if (bitgoFeeInfo) {
         return;
       }
-      return params.wallet.getBitGoFee({amount: totalOutputAmount, instant: params.instant})
+      return params.wallet.getBitGoFee({ amount: totalOutputAmount, instant: params.instant })
         .then(function(result) {
           if (result && result.fee > 0) {
             bitgoFeeInfo = {
@@ -218,8 +215,8 @@ exports.createTransaction = function(params) {
       });
   };
 
-  var getBitGoFeeAddress = function() {
-    return Q().then(function() {
+  const getBitGoFeeAddress = function() {
+    return Promise.try(function() {
       // If we don't have bitgoFeeInfo, or address is already set, don't get a new one
       if (!bitgoFeeInfo || bitgoFeeInfo.address) {
         return;
@@ -233,7 +230,7 @@ exports.createTransaction = function(params) {
 
   // Get a dynamic fee estimate from the BitGo server if feeTxConfirmTarget
   // is specified or if no fee-related params are specified
-  var getDynamicFeeRateEstimate = function() {
+  const getDynamicFeeRateEstimate = function() {
     if (params.feeTxConfirmTarget || !feeParamsDefined) {
       return bitgo.estimateFee({
         numBlocks: params.feeTxConfirmTarget,
@@ -243,11 +240,11 @@ exports.createTransaction = function(params) {
         cpfpAware: true
       })
       .then(function(result) {
-        var estimatedFeeRate = result.cpfpFeePerKb;
-        var minimum = params.instant ? Math.max(constants.minFeeRate, constants.minInstantFeeRate) : constants.minFeeRate;
+        const estimatedFeeRate = result.cpfpFeePerKb;
+        const minimum = params.instant ? Math.max(constants.minFeeRate, constants.minInstantFeeRate) : constants.minFeeRate;
         // 5 satoshis per byte
         // it is worth noting that the padding only applies when the threshold is crossed, but not when the delta is less than the padding
-        var padding = 5000;
+        const padding = 5000;
         if (estimatedFeeRate < minimum) {
           console.log(new Date() + ': Error when estimating fee for send from ' + params.wallet.id() + ', it was too low - ' + estimatedFeeRate);
           feeRate = minimum + padding;
@@ -261,13 +258,12 @@ exports.createTransaction = function(params) {
       .catch(function(e) {
         // sanity check failed on tx size
         if (_.includes(e.message, 'invalid txSize')) {
-          return Q.reject(e);
-        }
-        else {
+          return Promise.reject(e);
+        } else {
           // couldn't estimate the fee, proceed using the default
           feeRate = constants.fallbackFeeRate;
-          console.log("Error estimating fee for send from " + params.wallet.id() + ": " + e.message);
-          return Q();
+          console.log('Error estimating fee for send from ' + params.wallet.id() + ': ' + e.message);
+          return Promise.resolve();
         }
       });
     }
@@ -275,7 +271,7 @@ exports.createTransaction = function(params) {
 
 
   // Get the unspents for the sending wallet.
-  var getUnspents = function() {
+  const getUnspents = function() {
 
     if (params.unspents) { // we just wanna use custom unspents
       unspents = params.unspents;
@@ -283,7 +279,7 @@ exports.createTransaction = function(params) {
     }
 
     // Get enough unspents for the requested amount
-    var options = {
+    const options = {
       target: totalAmount,
       minSize: params.minUnspentSize || 0,
       instant: params.instant, // insist on instant unspents only
@@ -298,7 +294,7 @@ exports.createTransaction = function(params) {
         totalUnspentsCount = results.total;
         fetchedUnspentsCount = results.count;
         unspents = results.unspents.filter(function(u) {
-          var confirms = u.confirmations || 0;
+          const confirms = u.confirmations || 0;
           if (!params.enforceMinConfirmsForChange && u.isChange) {
             return true;
           }
@@ -330,38 +326,38 @@ exports.createTransaction = function(params) {
   };
 
   // Get the unspents for the single key fee address
-  var feeSingleKeyUnspents = [];
-  var getUnspentsForSingleKey = function() {
+  let feeSingleKeyUnspents = [];
+  const getUnspentsForSingleKey = function() {
     if (feeSingleKeySourceAddress) {
-      var feeTarget = 0.01e8;
+      let feeTarget = 0.01e8;
       if (params.instant) {
         feeTarget += totalAmount * 0.001;
       }
       return bitgo.get(bitgo.url('/address/' + feeSingleKeySourceAddress + '/unspents?target=' + feeTarget))
         .then(function(response) {
           if (response.body.total <= 0) {
-            throw new Error("No unspents available in single key fee source");
+            throw new Error('No unspents available in single key fee source');
           }
           feeSingleKeyUnspents = response.body.unspents;
         });
     }
   };
 
-  var minerFeeInfo = {};
-  var txInfo = {};
+  let minerFeeInfo = {};
+  let txInfo = {};
 
   // Iterate unspents, sum the inputs, and save _inputs with the total
   // input amount and final list of inputs to use with the transaction.
-  var feeSingleKeyUnspentsUsed = [];
+  let feeSingleKeyUnspentsUsed = [];
 
-  var collectInputs = function() {
+  const collectInputs = function() {
     if (!unspents.length) {
       throw new Error('no unspents available on wallet');
     }
     inputAmount = 0;
 
     // Calculate the cost of spending a single input, i.e. the smallest economical unspent value
-    return Q().then(function() {
+    return Promise.try(function() {
 
       if (_.isNumber(params.feeRate)) {
         return params.feeRate;
@@ -447,8 +443,8 @@ exports.createTransaction = function(params) {
         });
 
         if (shouldComputeBestFee) {
-          var approximateFee = minerFeeInfo.fee;
-          var shouldRecurse = typeof(fee) === 'undefined' || approximateFee > fee;
+          const approximateFee = minerFeeInfo.fee;
+          const shouldRecurse = _.isUndefined(fee) || approximateFee > fee;
           fee = approximateFee;
           // Recompute totalAmount from scratch
           totalAmount = fee + totalOutputAmount;
@@ -463,12 +459,12 @@ exports.createTransaction = function(params) {
           }
         }
 
-        var totalFee = fee + (bitgoFeeInfo ? bitgoFeeInfo.amount : 0);
+        const totalFee = fee + (bitgoFeeInfo ? bitgoFeeInfo.amount : 0);
 
         if (feeSingleKeySourceAddress) {
-          var summedSingleKeyUnspents = _.sumBy(feeSingleKeyUnspents, 'value');
+          const summedSingleKeyUnspents = _.sumBy(feeSingleKeyUnspents, 'value');
           if (totalFee > summedSingleKeyUnspents) {
-            var err = new Error('Insufficient fee amount available in single key fee source: ' + summedSingleKeyUnspents);
+            const err = new Error('Insufficient fee amount available in single key fee source: ' + summedSingleKeyUnspents);
             err.result = {
               fee: fee,
               feeRate: feeRate,
@@ -477,7 +473,7 @@ exports.createTransaction = function(params) {
               bitgoFee: bitgoFeeInfo,
               txInfo: txInfo
             };
-            return Q.reject(err);
+            return Promise.reject(err);
           }
         }
 
@@ -489,13 +485,13 @@ exports.createTransaction = function(params) {
           // having many small unspents and we hit our limit on the number of inputs we can use
           // in a txn, or it might have been that the filters the user passed in (like minConfirms)
           // disqualified too many of the unspents
-          var err;
+          let err;
           if (totalUnspentsCount === fetchedUnspentsCount) {
             // we fetched every unspent the wallet had, but it still wasn't enough
             err = new Error('Insufficient funds');
           } else {
             // we weren't able to fetch all the unspents on the wallet
-            err = new Error('Transaction size too large due to too many unspents. Can send only ' + inputAmount + ' satoshis in this transaction');
+            err = new Error(`Transaction size too large due to too many unspents. Can send only ${inputAmount} satoshis in this transaction`);
           }
           err.result = {
             fee: fee,
@@ -505,31 +501,31 @@ exports.createTransaction = function(params) {
             bitgoFee: bitgoFeeInfo,
             txInfo: txInfo
           };
-          return Q.reject(err);
+          return Promise.reject(err);
         }
       });
   };
 
   // Add the outputs for this transaction.
-  var collectOutputs = function() {
+  const collectOutputs = function() {
     if (minerFeeInfo.size >= 90000) {
       throw new Error('transaction too large: estimated size ' + minerFeeInfo.size + ' bytes');
     }
 
-    var outputs = [];
+    const outputs = [];
 
     recipients.forEach(function(recipient) {
-      var script;
-      if (typeof(recipient.address) == 'string') {
+      let script;
+      if (_.isString(recipient.address)) {
         script = bitcoin.address.toOutputScript(recipient.address, bitcoin.getNetwork());
-      } else if (typeof(recipient.script) === 'object') {
+      } else if (_.isObject(recipient.script)) {
         script = recipient.script;
       } else {
         throw new Error('neither recipient address nor script was provided');
       }
 
       // validate travelInfo if it exists
-      var travelInfo;
+      let travelInfo;
       if (!_.isEmpty(recipient.travelInfo)) {
         travelInfo = recipient.travelInfo;
         // Better to avoid trouble now, before tx is created
@@ -548,17 +544,17 @@ exports.createTransaction = function(params) {
       outputs.push({ script, amount });
     });
 
-    var getChangeOutputs = function(changeAmount) {
+    const getChangeOutputs = function(changeAmount) {
       if (changeAmount < 0) {
         throw new Error('negative change amount: ' + changeAmount);
       }
 
-      var result = [];
+      const result = [];
       // if we paid fees from a single key wallet, return the fee change first
       if (feeSingleKeySourceAddress) {
-        var feeSingleKeyWalletChangeAmount = feeSingleKeyInputAmount - (fee + (bitgoFeeInfo ? bitgoFeeInfo.amount : 0));
+        const feeSingleKeyWalletChangeAmount = feeSingleKeyInputAmount - (fee + (bitgoFeeInfo ? bitgoFeeInfo.amount : 0));
         if (feeSingleKeyWalletChangeAmount >= constants.minOutputSize) {
-          result.push({address: feeSingleKeySourceAddress, amount: feeSingleKeyWalletChangeAmount});
+          result.push({ address: feeSingleKeySourceAddress, amount: feeSingleKeyWalletChangeAmount });
           changeAmount = changeAmount - feeSingleKeyWalletChangeAmount;
         }
       }
@@ -571,12 +567,12 @@ exports.createTransaction = function(params) {
       if (params.wallet.type() === 'safe') {
         return params.wallet.addresses()
           .then(function(response) {
-            result.push({address: response.addresses[0].address, amount: changeAmount});
+            result.push({ address: response.addresses[0].address, amount: changeAmount });
             return result;
           });
       }
 
-      var extraChangeTotal = _.sum(extraChangeAmounts);
+      let extraChangeTotal = _.sum(extraChangeAmounts);
       // Sanity check
       if (extraChangeTotal > changeAmount) {
         extraChangeAmounts = [];
@@ -584,32 +580,31 @@ exports.createTransaction = function(params) {
       }
 
       // copy and add remaining change amount
-      var allChangeAmounts = extraChangeAmounts.slice(0);
+      const allChangeAmounts = extraChangeAmounts.slice(0);
       allChangeAmounts.push(changeAmount - extraChangeTotal);
 
       // Recursive async func to add all change outputs
-      var addChangeOutputs = function() {
-        var thisAmount = allChangeAmounts.shift();
+      const addChangeOutputs = function() {
+        const thisAmount = allChangeAmounts.shift();
         if (!thisAmount) {
           return result;
         }
-        return Q().then(function() {
+        return Promise.try(function() {
           if (params.changeAddress) {
             // If user passed a change address, use it for all outputs
             return params.changeAddress;
           } else {
             // Otherwise create a new address per output, for privacy
             // determine if segwit or not
-            const isSegwit = bitgo.getConstants().enableSegwit;
-            const changeChain = isSegwit ? 11 : 1;
+            const changeChain = params.wallet.getChangeChain(params);
             return params.wallet.createAddress({ chain: changeChain, validate: validate })
-              .then(function(result) {
-                return result.address;
-              });
+            .then(function(result) {
+              return result.address;
+            });
           }
         })
           .then(function(address) {
-            result.push({address: address, amount: thisAmount});
+            result.push({ address: address, amount: thisAmount });
             return addChangeOutputs();
           });
       };
@@ -618,12 +613,12 @@ exports.createTransaction = function(params) {
     };
 
     // Add change output(s) and instant fee output if applicable
-    return Q().then(function() {
+    return Promise.try(function() {
       return getChangeOutputs(inputAmount - totalAmount);
     })
       .then(function(result) {
         changeOutputs = result;
-        var extraOutputs = changeOutputs.concat([]); // copy the array
+        const extraOutputs = changeOutputs.concat([]); // copy the array
         if (bitgoFeeInfo && bitgoFeeInfo.amount > 0) {
           extraOutputs.push(bitgoFeeInfo);
         }
@@ -631,7 +626,7 @@ exports.createTransaction = function(params) {
           output.script = bitcoin.address.toOutputScript(output.address, bitcoin.getNetwork());
 
           // decide where to put the outputs - default is to randomize unless forced to end
-          var outputIndex = params.forceChangeAtEnd ? outputs.length : _.random(0, outputs.length);
+          const outputIndex = params.forceChangeAtEnd ? outputs.length : _.random(0, outputs.length);
           outputs.splice(outputIndex, 0, output);
         });
 
@@ -641,7 +636,7 @@ exports.createTransaction = function(params) {
         });
 
         travelInfos = _(outputs).map(function(output, index) {
-          var result = output.travelInfo;
+          const result = output.travelInfo;
           if (!result) {
             return undefined;
           }
@@ -654,16 +649,16 @@ exports.createTransaction = function(params) {
   };
 
   // Serialize the transaction, returning what is needed to sign it
-  var serialize = function() {
+  const serialize = function() {
     // only need to return the unspents that were used and just the chainPath, redeemScript, and instant flag
-    var pickedUnspents = _.map(unspents, function(unspent) {
+    const pickedUnspents = _.map(unspents, function(unspent) {
       return _.pick(unspent, ['chainPath', 'redeemScript', 'instant', 'witnessScript', 'script', 'value']);
     });
-    var prunedUnspents = _.slice(pickedUnspents, 0, transaction.tx.ins.length - feeSingleKeyUnspentsUsed.length);
+    const prunedUnspents = _.slice(pickedUnspents, 0, transaction.tx.ins.length - feeSingleKeyUnspentsUsed.length);
     _.each(feeSingleKeyUnspentsUsed, function(feeUnspent) {
       prunedUnspents.push({ redeemScript: false, chainPath: false }); // mark as false to signify a non-multisig address
     });
-    var result = {
+    const result = {
       transactionHex: transaction.buildIncomplete().toHex(),
       unspents: prunedUnspents,
       fee: fee,
@@ -688,11 +683,11 @@ exports.createTransaction = function(params) {
     return result;
   };
 
-  return Q().then(function() {
+  return Promise.try(function() {
     return getBitGoFee();
   })
     .then(function() {
-      return Q.all([getBitGoFeeAddress(), getUnspents(), getUnspentsForSingleKey()]);
+      return Promise.all([getBitGoFeeAddress(), getUnspents(), getUnspentsForSingleKey()]);
     })
     .then(collectInputs)
     .then(collectOutputs)
@@ -711,7 +706,7 @@ exports.createTransaction = function(params) {
  *
  * @returns size: estimated size of the transaction in bytes
  */
-var estimateTransactionSize = function(params) {
+const estimateTransactionSize = function(params) {
   if (!_.isInteger(params.nP2SHInputs) || params.nP2SHInputs < 0) {
     throw new Error('expecting positive nP2SHInputs');
   }
@@ -730,7 +725,7 @@ var estimateTransactionSize = function(params) {
 
 
 
-  var estimatedSize = P2SH_INPUT_SIZE * params.nP2SHInputs +
+  const estimatedSize = P2SH_INPUT_SIZE * params.nP2SHInputs +
     P2SH_P2WSH_INPUT_SIZE * (params.nP2SHP2WSHInputs || 0) +
     P2PKH_INPUT_SIZE * (params.nP2PKHInputs || 0) +
     OUTPUT_SIZE * params.nOutputs +
@@ -758,8 +753,8 @@ var estimateTransactionSize = function(params) {
  * }
  */
 exports.calculateMinerFeeInfo = function(params) {
-  var feeRateToUse = params.feeRate || params.bitgo.getConstants().fallbackFeeRate;
-  var estimatedSize = estimateTransactionSize(params);
+  const feeRateToUse = params.feeRate || params.bitgo.getConstants().fallbackFeeRate;
+  const estimatedSize = estimateTransactionSize(params);
 
   return {
     size: estimatedSize,
@@ -785,21 +780,21 @@ exports.calculateMinerFeeInfo = function(params) {
  * @returns {*}
  */
 exports.signTransaction = function(params) {
-  var keychain = params.keychain; // duplicate so as to not mutate below
+  let keychain = params.keychain; // duplicate so as to not mutate below
 
-  var validate = (params.validate === undefined) ? true : params.validate;
-  var privKey;
-  if (typeof(params.transactionHex) !== 'string') {
+  const validate = (params.validate === undefined) ? true : params.validate;
+  let privKey;
+  if (!_.isString(params.transactionHex)) {
     throw new Error('expecting the transaction hex as a string');
   }
   if (!Array.isArray(params.unspents)) {
     throw new Error('expecting the unspents array');
   }
-  if (typeof(validate) !== 'boolean') {
+  if (!_.isBoolean(validate)) {
     throw new Error('expecting validate to be a boolean');
   }
-  if (typeof(keychain) !== 'object' || typeof(keychain.xprv) !== 'string') {
-    if (typeof(params.signingKey) === 'string') {
+  if (!_.isObject(keychain) || !_.isString(keychain.xprv)) {
+    if (_.isString(params.signingKey)) {
       privKey = bitcoin.ECPair.fromWIF(params.signingKey, bitcoin.getNetwork());
       keychain = undefined;
     } else {
@@ -807,23 +802,25 @@ exports.signTransaction = function(params) {
     }
   }
 
-  var feeSingleKey;
+  let feeSingleKey;
   if (params.feeSingleKeyWIF) {
     feeSingleKey = bitcoin.ECPair.fromWIF(params.feeSingleKeyWIF, bitcoin.getNetwork());
   }
 
-  var transaction = bitcoinCash.Transaction.fromHex(params.transactionHex);
+  let transaction = bitcoin.Transaction.fromHex(params.transactionHex);
   if (transaction.ins.length !== params.unspents.length) {
     throw new Error('length of unspents array should equal to the number of transaction inputs');
   }
 
-  var hdPath;
+  let hdPath;
+  let rootExtKey;
   if (keychain) {
-    var rootExtKey = bitcoin.HDNode.fromBase58(keychain.xprv);
+    //var is being used because of scope reference
+    rootExtKey = bitcoin.HDNode.fromBase58(keychain.xprv);
     hdPath = bitcoin.hdPath(rootExtKey);
   }
 
-  var txb = bitcoinCash.TransactionBuilder.fromTransaction(transaction, rootExtKey.keyPair.network);
+  const txb = bitcoin.TransactionBuilder.fromTransaction(transaction, _.get(rootExtKey, 'keyPair.network', bitcoin.getNetwork()));
 
   for (let index = 0; index < txb.tx.ins.length; ++index) {
     const currentUnspent = params.unspents[index];
@@ -839,8 +836,8 @@ exports.signTransaction = function(params) {
 
     const chainPath = currentUnspent.chainPath;
     if (hdPath) {
-      var subPath = keychain.walletSubPath || '/0/0';
-      var path = keychain.path + subPath + chainPath;
+      const subPath = keychain.walletSubPath || '/0/0';
+      const path = keychain.path + subPath + chainPath;
       privKey = hdPath.deriveKey(path);
     }
 
@@ -849,7 +846,7 @@ exports.signTransaction = function(params) {
     // subscript is the part of the output script after the OP_CODESEPARATOR.
     // Since we are only ever signing p2sh outputs, which do not have
     // OP_CODESEPARATORS, it is always the output script.
-    let subscript = new Buffer(currentUnspent.redeemScript, 'hex');
+    const subscript = new Buffer(currentUnspent.redeemScript, 'hex');
     currentUnspent.validationScript = subscript;
 
     // In order to sign with bitcoinjs-lib, we must use its transaction
@@ -879,7 +876,13 @@ exports.signTransaction = function(params) {
       }
 
     } catch (e) {
-      return Q.reject('Failed to sign input #' + index);
+      // we need to know what's causing this
+      e.result = {
+        unspent: currentUnspent
+      };
+      e.message = `${e.message} — ${JSON.stringify(e.result, null, 4)}`;
+      console.trace(e);
+      return Promise.reject('Failed to sign input #' + index);
     }
 
   }
@@ -919,7 +922,7 @@ exports.signTransaction = function(params) {
     }
   }
 
-  return Q.when({
+  return Promise.resolve({
     transactionHex: transaction.toHex()
   });
 };
@@ -943,11 +946,11 @@ exports.verifyInputSignatures = function(transaction, inputIndex, pubScript, ign
 
   ignoreKeyIndices = ignoreKeyIndices || [];
   const currentTransactionInput = transaction.ins[inputIndex];
-  var sigScript = currentTransactionInput.script;
-  var sigsNeeded = 1;
-  var sigs = [];
-  var pubKeys = [];
-  var decompiledSigScript = bitcoin.script.decompile(sigScript);
+  let sigScript = currentTransactionInput.script;
+  let sigsNeeded = 1;
+  const sigs = [];
+  const pubKeys = [];
+  let decompiledSigScript = bitcoin.script.decompile(sigScript);
 
   const isSegwitInput = currentTransactionInput.witness.length > 0;
   if (isSegwitInput) {
@@ -959,17 +962,17 @@ exports.verifyInputSignatures = function(transaction, inputIndex, pubScript, ign
   }
 
   // Check the script type to determine number of signatures, the pub keys, and the script to hash.
-  const inputClassification = bitcoinCash.script.classifyInput(sigScript, true);
+  const inputClassification = bitcoin.script.classifyInput(sigScript, true);
   switch (inputClassification) {
     case 'scripthash':
       // Replace the pubScript with the P2SH Script.
       pubScript = decompiledSigScript[decompiledSigScript.length - 1];
-      var decompiledPubScript = bitcoin.script.decompile(pubScript);
+      const decompiledPubScript = bitcoin.script.decompile(pubScript);
       sigsNeeded = decompiledPubScript[0] - bitcoin.opcodes.OP_1 + 1;
-      for (var index = 1; index < decompiledSigScript.length - 1; ++index) {
+      for (let index = 1; index < decompiledSigScript.length - 1; ++index) {
         sigs.push(decompiledSigScript[index]);
       }
-      for (index = 1; index < decompiledPubScript.length - 2; ++index) {
+      for (let index = 1; index < decompiledPubScript.length - 2; ++index) {
         // we minus 1 because the key indexes start from the second chunk (first chunk is used for total keys)
         if (_.includes(ignoreKeyIndices, index - 1)) {
           // ignore this public key (do not treat it as valid for a signature)
@@ -994,7 +997,7 @@ exports.verifyInputSignatures = function(transaction, inputIndex, pubScript, ign
       continue;
     }
 
-    var hashType = sigs[sigIndex][sigs[sigIndex].length - 1];
+    const hashType = sigs[sigIndex][sigs[sigIndex].length - 1];
     sigs[sigIndex] = sigs[sigIndex].slice(0, sigs[sigIndex].length - 1); // pop hash type from end
     let signatureHash;
     if (isSegwitInput) {
@@ -1003,12 +1006,12 @@ exports.verifyInputSignatures = function(transaction, inputIndex, pubScript, ign
       signatureHash = transaction.hashForSignature(inputIndex, pubScript, hashType);
     }
 
-    var validSig = false;
+    let validSig = false;
 
     // Enumerate the possible public keys
-    for (var pubKeyIndex = 0; pubKeyIndex < pubKeys.length; ++pubKeyIndex) {
-      var pubKey = bitcoin.ECPair.fromPublicKeyBuffer(pubKeys[pubKeyIndex]);
-      var signature = bitcoin.ECSignature.fromDER(sigs[sigIndex]);
+    for (let pubKeyIndex = 0; pubKeyIndex < pubKeys.length; ++pubKeyIndex) {
+      const pubKey = bitcoin.ECPair.fromPublicKeyBuffer(pubKeys[pubKeyIndex]);
+      const signature = bitcoin.ECSignature.fromDER(sigs[sigIndex]);
       validSig = pubKey.verify(signatureHash, signature);
       if (validSig) {
         pubKeys.splice(pubKeyIndex, 1);  // remove the pubkey so we can't match 2 sigs against the same pubkey
