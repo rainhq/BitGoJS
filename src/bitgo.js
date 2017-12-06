@@ -24,6 +24,7 @@ const Markets = require('./markets');
 const PendingApprovals = require('./pendingapprovals');
 const shamir = require('secrets.js-grempe');
 const sjcl = require('./sjcl.min');
+const bs58 = require('bs58');
 const common = require('./common');
 const Util = require('./util');
 const Promise = require('bluebird');
@@ -604,6 +605,16 @@ BitGo.prototype.decrypt = function(params) {
 };
 
 /**
+ * Generate a random password on the client
+ * @param   {Number} numWords     Number of 32-bit words
+ * @returns {String}          base58 random password
+ */
+BitGo.prototype.generateRandomPassword = function(numWords = 5) {
+  const bytes = sjcl.codec.bytes.fromBits(sjcl.random.randomWords(numWords));
+  return bs58.encode(bytes);
+};
+
+/**
  *
  * @param seed A hexadecimal secret to split
  * @param passwords An array of the passwords used to encrypt each share
@@ -900,7 +911,7 @@ BitGo.prototype.authenticate = function(params, callback) {
   params = params || {};
   common.validateParams(params, ['username', 'password'], ['otp'], callback);
 
-  const username = params.username;
+  const username = params.username.toLowerCase();
   const password = params.password;
   const otp = params.otp;
   const trust = params.trust;

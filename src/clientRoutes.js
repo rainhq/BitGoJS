@@ -247,7 +247,7 @@ const handleV2GenerateWallet = function(req) {
   });
 };
 
-//handle v2 approve transaction
+// handle v2 approve transaction
 const handleV2PendingApproval = co(function *(req) {
   const bitgo = req.bitgo;
   const coin = bitgo.coin(req.params.coin);
@@ -275,12 +275,28 @@ const handleV2AcceptWalletShare = co(function *(req) {
   return coin.wallets().acceptShare(params);
 });
 
+// handle wallet sign transaction
+const handleV2SignTxWallet = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.signTransaction(req.body);
+});
+
 // handle sign transaction
 const handleV2SignTx = function(req) {
   const bitgo = req.bitgo;
   const coin = bitgo.coin(req.params.coin);
   return coin.signTransaction(req.body);
 };
+
+// handle wallet fanout unspents
+const handleV2FanOutUnspents = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.fanoutUnspents(req.body);
+});
 
 // handle send one
 const handleV2SendOne = function(req) {
@@ -476,10 +492,14 @@ exports = module.exports = function(app, args) {
   app.post('/api/v2/:coin/walletshare/:id/acceptshare', parseBody, prepareBitGo(args), promiseWrapper(handleV2AcceptWalletShare, args));
   // sign transaction
   app.post('/api/v2/:coin/signtx', parseBody, prepareBitGo(args), promiseWrapper(handleV2SignTx, args));
+  app.post('/api/v2/:coin/wallet/:id/signtx', parseBody, prepareBitGo(args), promiseWrapper(handleV2SignTxWallet, args));
 
   // send transaction
   app.post('/api/v2/:coin/wallet/:id/sendcoins', parseBody, prepareBitGo(args), promiseWrapper(handleV2SendOne, args));
   app.post('/api/v2/:coin/wallet/:id/sendmany', parseBody, prepareBitGo(args), promiseWrapper(handleV2SendMany, args));
+
+  // unspent changes
+  app.post('/api/v2/wallet/:id/fanoutunspents', parseBody, prepareBitGo(args), promiseWrapper(handleV2FanOutUnspents, args));
 
   // Miscellaneous
   app.post('/api/v2/:coin/canonicaladdress', parseBody, prepareBitGo(args), promiseWrapper(handleLtcCanonicalAddress, args));

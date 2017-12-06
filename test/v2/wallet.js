@@ -2,7 +2,6 @@
 // Tests for Wallets
 //
 
-const assert = require('assert');
 const should = require('should');
 const _ = require('lodash');
 const Promise = require('bluebird');
@@ -17,6 +16,7 @@ describe('V2 Wallet:', function() {
   let wallet;
   let sequenceId;
   let walletAddress;
+  let walletAddressId;
 
   // TODO: automate keeping test wallet full with bitcoin
   // If failures are occurring, make sure that the wallet at test.bitgo.com contains bitcoin.
@@ -24,7 +24,7 @@ describe('V2 Wallet:', function() {
   // many of these tests to fail. If that is the case, send it some bitcoin with at least 2 transactions
   // to make sure the tests will pass.
 
-  before(function() {
+  before(co(function *() {
     // TODO: replace dev with test
     bitgo = new TestV2BitGo({ env: 'test' });
     bitgo.initializeTestVars();
@@ -32,14 +32,11 @@ describe('V2 Wallet:', function() {
     wallets = basecoin.wallets();
     basecoin.keychains();
 
-    return bitgo.authenticateTestUser(bitgo.testUserOTP())
-    .then(function() {
-      return wallets.getWallet({ id: TestV2BitGo.V2.TEST_WALLET1_ID });
-    })
-    .then(function(testWallet) {
-      wallet = testWallet;
-    });
-  });
+    yield bitgo.authenticateTestUser(bitgo.testUserOTP());
+    wallet = yield wallets.getWallet({ id: TestV2BitGo.V2.TEST_WALLET1_ID });
+
+    yield bitgo.checkFunded();
+  }));
 
   describe('Create Address', function() {
 
@@ -78,6 +75,7 @@ describe('V2 Wallet:', function() {
         addresses.should.have.property('addresses');
         addresses.addresses.length.should.be.greaterThan(2);
         walletAddress = _.head(addresses.addresses).address;
+        walletAddressId = _.head(addresses.addresses).id;
       });
     });
 
@@ -87,6 +85,17 @@ describe('V2 Wallet:', function() {
         address.should.have.property('coin');
         address.should.have.property('wallet');
         address.address.should.equal(walletAddress);
+        address.wallet.should.equal(wallet.id());
+      });
+    });
+
+    it('should get single address by id', function() {
+      return wallet.getAddress({ id: walletAddressId })
+      .then(function(address) {
+        address.should.have.property('coin');
+        address.should.have.property('wallet');
+        address.address.should.equal(walletAddress);
+        address.id.should.equal(walletAddressId);
         address.wallet.should.equal(wallet.id());
       });
     });
@@ -277,6 +286,9 @@ describe('V2 Wallet:', function() {
     });
 
     it('should send transaction with sequence Id', co(function *() {
+      // Wait five seconds to send a new tx
+      yield Promise.delay(5000);
+
       sequenceId = Math.random().toString(36).slice(-10);
       const recipientAddress = yield wallet.createAddress();
       const params = {
@@ -292,26 +304,27 @@ describe('V2 Wallet:', function() {
     }));
 
     it('should fetch a transfer by its sequence Id', co(function *() {
+      // Wait for worker to do its work
+      yield Promise.delay(10000);
+
       const transfer = yield wallet.transferBySequenceId({ sequenceId: sequenceId });
       transfer.should.have.property('sequenceId');
       transfer.sequenceId.should.equal(sequenceId);
     }));
 
-    it('sendMany should error when given a non-array of recipients', function() {
-      return wallet.createAddress()
-      .then(function(recipientAddress) {
-        const params = {
-          recipients: {
-            amount: 0.01 * 1e8, // 0.01 tBTC
-            address: recipientAddress.address
-          },
-          walletPassphrase: TestV2BitGo.V2.TEST_WALLET1_PASSCODE
-        };
-        assert.throws(function() {
-          wallet.sendMany(params);
-        });
-      });
-    });
+    it('sendMany should error when given a non-array of recipients', co(function *() {
+      const recipientAddress = yield wallet.createAddress();
+      const params = {
+        recipients: {
+          amount: 0.01 * 1e8, // 0.01 tBTC
+          address: recipientAddress.address
+        },
+        walletPassphrase: TestV2BitGo.V2.TEST_WALLET1_PASSCODE
+      };
+
+      const error = yield bitgo.getAsyncError(wallet.sendMany(params));
+      should.exist(error);
+    }));
 
     it('should send a transaction to the wallet itself with sendMany', function() {
       return wallet.createAddress()
@@ -379,7 +392,7 @@ describe('V2 Wallet:', function() {
         keychain = key;
         return wallet.createAddress();
       })
-      .delay(3000) // wait three seconds before fetching unspents
+      .delay(5000) // wait five seconds before fetching unspents
       .then(function(recipientAddress) {
         const params = {
           recipients: [
@@ -512,6 +525,62 @@ describe('V2 Wallet:', function() {
         approval.wallet.should.equal(receivedWalletId);
       });
     });
+  });
+
+  describe('Unspent Manipulation', function() {
+    let unspentWallet;
+
+    before(co(function *() {
+      unspentWallet = yield wallets.getWallet({ id: TestV2BitGo.V2.TEST_WALLET2_UNSPENTS_ID });
+      yield bitgo.unlock({ otp: bitgo.testUserOTP() });
+    }));
+
+    it('should consolidate the number of unspents to 4', co(function *() {
+      yield Promise.delay(3000);
+
+      const params = {
+        limit: 250,
+        targetUnspentPoolSize: 2,
+        minValue: 1000,
+        numBlocks: 12,
+        walletPassphrase: TestV2BitGo.V2.TEST_WALLET2_UNSPENTS_PASSCODE
+      };
+      const transaction = yield unspentWallet.consolidateUnspents(params);
+      transaction.should.have.property('status');
+      transaction.should.have.property('txid');
+      transaction.status.should.equal('signed');
+
+      yield Promise.delay(8000);
+
+      const unspentsResult = yield unspentWallet.unspents({ limit: 1000 });
+      const numUnspents = unspentsResult.unspents.length;
+      numUnspents.should.equal(2);
+
+      yield Promise.delay(3000);
+    }));
+
+    it('should fanout the number of unspents to 200', co(function *() {
+      yield Promise.delay(3000);
+
+      const params = {
+        minHeight: 1,
+        maxNumInputsToUse: 80, // should be 2, but if a test were to fail and need to be rerun we want to use more of them
+        numUnspentsToMake: 20,
+        numBlocks: 12,
+        walletPassphrase: TestV2BitGo.V2.TEST_WALLET2_UNSPENTS_PASSCODE
+      };
+      const transaction = yield unspentWallet.fanoutUnspents(params);
+
+      transaction.should.have.property('status');
+      transaction.should.have.property('txid');
+      transaction.status.should.equal('signed');
+
+      yield Promise.delay(8000);
+
+      const unspentsResult = yield unspentWallet.unspents({ limit: 1000 });
+      const numUnspents = unspentsResult.unspents.length;
+      numUnspents.should.equal(20);
+    }));
   });
 
 });

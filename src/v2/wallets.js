@@ -60,6 +60,13 @@ Wallets.prototype.list = function(params, callback) {
     queryObject.limit = params.limit;
   }
 
+  if (params.allTokens) {
+    if (!_.isBoolean(params.allTokens)) {
+      throw new Error('invalid allTokens argument, expecting boolean');
+    }
+    queryObject.allTokens = params.allTokens;
+  }
+
   const self = this;
   return this.bitgo.get(this.baseCoin.url('/wallet'))
   .query(queryObject)
@@ -181,6 +188,10 @@ Wallets.prototype.generateWallet = co(function *(params, callback) {
     throw new Error('Expected disableTransactionNotifications to be a boolean. ');
   }
 
+  if (params.passcodeEncryptionCode && !_.isString(params.passcodeEncryptionCode)) {
+    throw new Error('passcodeEncryptionCode must be a string');
+  }
+
   let userKeychain;
   let backupKeychain;
   let bitgoKeychain;
@@ -212,7 +223,8 @@ Wallets.prototype.generateWallet = co(function *(params, callback) {
       userKeychain.encryptedPrv = self.bitgo.encrypt({ password: passphrase, input: userKeychain.prv });
       userKeychainParams = {
         pub: userKeychain.pub,
-        encryptedPrv: userKeychain.encryptedPrv
+        encryptedPrv: userKeychain.encryptedPrv,
+        originalPasscodeEncryptionCode: params.passcodeEncryptionCode
       };
     }
 
@@ -451,7 +463,17 @@ Wallets.prototype.getWallet = function(params, callback) {
 
   const self = this;
 
+  const query = {};
+
+  if (params.allTokens) {
+    if (!_.isBoolean(params.allTokens)) {
+      throw new Error('invalid allTokens argument, expecting boolean');
+    }
+    query.allTokens = params.allTokens;
+  }
+
   return this.bitgo.get(this.baseCoin.url('/wallet/' + params.id))
+  .query(query)
   .result()
   .then(function(wallet) {
     return new self.coinWallet(self.bitgo, self.baseCoin, wallet);

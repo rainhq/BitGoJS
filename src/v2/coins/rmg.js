@@ -1,5 +1,6 @@
 const baseCoinPrototype = require('../baseCoin').prototype;
 const prova = require('../../prova');
+const _ = require('lodash');
 
 const Rmg = function() {
   // this function is called externally from BaseCoin
@@ -26,8 +27,95 @@ Rmg.prototype.getFamily = function() {
   return 'rmg';
 };
 
+Rmg.prototype.getFullName = function() {
+  return 'Royal Mint Gold';
+};
+
 Rmg.prototype.isValidAddress = function(address) {
   return prova.Address.validateBase58(address, this.network);
+};
+
+/**
+ * Make sure an address is valid and throw an error if it's not.
+ * @param address The address string on the network
+ * @param keychains Keychain objects with xpubs
+ * @param chain Derivation chain
+ * @param index Derivation index
+ */
+Rmg.prototype.verifyAddress = function({ address, keychains, chain, index }) {
+  if (!this.isValidAddress(address)) {
+    throw new Error(`invalid address: ${address}`);
+  }
+
+  const expectedAddress = this.generateAddress({
+    keychains,
+    threshold: 2,
+    chain: chain,
+    index: index
+  });
+
+  if (expectedAddress.address !== address) {
+    throw new Error(`address validation failure: expected ${expectedAddress.address} but got ${address}`);
+  }
+};
+
+/**
+ * Generate an address for a wallet based on a set of configurations
+ * @param keychains Array of objects with xpubs
+ * @param threshold Minimum number of signatures
+ * @param chain Derivation chain
+ * @param index Derivation index
+ * @returns {{chain: number, index: number, coin: number, coinSpecific: {outputScript}}}
+ */
+Rmg.prototype.generateAddress = function({ keychains, threshold, chain, index }) {
+  let signatureThreshold = 2;
+  if (_.isInteger(threshold)) {
+    signatureThreshold = threshold;
+    if (signatureThreshold <= 0) {
+      throw new Error('threshold has to be positive');
+    }
+    if (signatureThreshold > keychains.length) {
+      throw new Error('threshold cannot exceed number of keys');
+    }
+  }
+
+  let derivationChain = 0;
+  if (_.isInteger(chain) && chain > 0) {
+    derivationChain = chain;
+  }
+
+  let derivationIndex = 0;
+  if (_.isInteger(index) && index > 0) {
+    derivationIndex = index;
+  }
+
+  const path = 'm/0/0/' + derivationChain + '/' + derivationIndex;
+  // do not modify the original argument
+  const keychainCopy = _.cloneDeep(keychains);
+  const userKey = keychainCopy.shift();
+  const aspKeyIds = keychainCopy.map((key) => key.aspKeyId);
+  const derivedUserKey = prova.HDNode.fromBase58(userKey.pub).hdPath().deriveKey(path).getPublicKeyBuffer();
+
+  const provaAddress = new prova.Address(derivedUserKey, aspKeyIds, this.network);
+  provaAddress.signatureCount = signatureThreshold;
+
+  const addressDetails = {
+    chain: derivationChain,
+    index: derivationIndex,
+    coin: this.getChain(),
+    coinSpecific: {
+      outputScript: provaAddress.toScript().toString('hex')
+    }
+  };
+
+  try {
+    addressDetails.address = provaAddress.toString();
+  } catch (e) {
+    // non-(n-1)/n signature count
+    addressDetails.address = null;
+  }
+
+  return addressDetails;
 };
 
 /**
@@ -41,10 +129,24 @@ Rmg.prototype.signTransaction = function(params) {
   const txPrebuild = params.txPrebuild;
   const userPrv = params.prv;
 
+  if (_.isUndefined(txPrebuild) || !_.isObject(txPrebuild)) {
+    if (!_.isUndefined(txPrebuild) && !_.isObject(txPrebuild)) {
+      throw new Error(`txPrebuild must be an object, got type ${typeof txPrebuild}`);
+    }
+    throw new Error('missing txPrebuild parameter');
+  }
+
   let transaction = prova.Transaction.fromHex(txPrebuild.txHex);
 
   if (transaction.ins.length !== txPrebuild.txInfo.unspents.length) {
     throw new Error('length of unspents array should equal to the number of transaction inputs');
+  }
+
+  if (_.isUndefined(userPrv) || !_.isString(userPrv)) {
+    if (!_.isUndefined(userPrv) && !_.isString(userPrv)) {
+      throw new Error(`prv must be a string, got type ${typeof userPrv}`);
+    }
+    throw new Error('missing prv parameter to sign transaction');
   }
 
   const keychain = prova.HDNode.fromBase58(userPrv, this.network);
