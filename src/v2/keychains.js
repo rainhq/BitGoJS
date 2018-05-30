@@ -1,6 +1,4 @@
 const common = require('../common');
-const crypto = require('crypto');
-const prova = require('../prova');
 const _ = require('lodash');
 const Promise = require('bluebird');
 const co = Promise.coroutine;
@@ -24,26 +22,85 @@ Keychains.prototype.get = function(params, callback) {
   .nodeify(callback);
 };
 
+/**
+ * list the users keychains
+ * @param params.limit - Max number of results in a single call.
+ * @param params.prevId - Continue iterating (provided by nextBatchPrevId in the previous list)
+ * @param callback
+ * @returns {*}
+ */
+Keychains.prototype.list = function(params, callback) {
+  return co(function *() {
+    params = params || {};
+    common.validateParams(params, [], [], callback);
+
+    const queryObject = {};
+
+    if (!_.isUndefined(params.limit)) {
+      if (!_.isNumber(params.limit)) {
+        throw new Error('invalid limit argument, expecting number');
+      }
+      queryObject.limit = params.limit;
+    }
+    if (!_.isUndefined(params.prevId)) {
+      if (!_.isString(params.prevId)) {
+        throw new Error('invalid prevId argument, expecting string');
+      }
+      queryObject.prevId = params.prevId;
+    }
+
+    return this.bitgo.get(this.baseCoin.url('/key')).query(queryObject).result();
+  }).call(this).asCallback(callback);
+};
+
+/**
+ * iterates through all keys associated with the user, decrypts them with the old password and encrypts them with the
+ * new password
+ * @param params.oldPassword - The old password used for encrypting the key
+ * @param params.newPassword - The new password to be used for encrypting the key
+ * @param callback
+ * @returns changedKeys Object - e.g.:
+ *  {
+ *    xpub1: encryptedPrv,
+ *    ...
+ *  }
+ */
+Keychains.prototype.updatePassword = function(params, callback) {
+  return co(function *() {
+    common.validateParams(params, ['oldPassword', 'newPassword'], [], callback);
+    const changedKeys = {};
+    let prevId;
+    let keysLeft = true;
+    while (keysLeft) {
+      const result = yield this.list({ limit: 500, prevId });
+      for (const key of result.keys) {
+        const oldEncryptedPrv = key.encryptedPrv;
+        if (_.isUndefined(oldEncryptedPrv)) {
+          continue;
+        }
+        try {
+          const decryptedPrv = this.bitgo.decrypt({ input: oldEncryptedPrv, password: params.oldPassword });
+          const newEncryptedPrv = this.bitgo.encrypt({ input: decryptedPrv, password: params.newPassword });
+          changedKeys[key.pub] = newEncryptedPrv;
+        } catch (e) {
+          // catching an error here means that the password was incorrect and hence there is nothing to change
+        }
+      }
+      if (result.nextBatchPrevId) {
+        prevId = result.nextBatchPrevId;
+      } else {
+        keysLeft = false;
+      }
+    }
+    return changedKeys;
+  }).call(this).asCallback(callback);
+};
+
 Keychains.prototype.create = function(params) {
   params = params || {};
   common.validateParams(params, [], []);
 
-  let seed;
-  if (!params.seed) {
-    // An extended private key has both a normal 256 bit private key and a 256
-    // bit chain code, both of which must be random. 512 bits is therefore the
-    // maximum entropy and gives us maximum security against cracking.
-    seed = crypto.randomBytes(512 / 8);
-  } else {
-    seed = params.seed;
-  }
-
-  const extendedKey = prova.HDNode.fromSeedBuffer(seed);
-  const xpub = extendedKey.neutered().toBase58();
-  return {
-    pub: xpub,
-    prv: extendedKey.toBase58()
-  };
+  return this.baseCoin.generateKeyPair(params.seed);
 };
 
 Keychains.prototype.add = function(params, callback) {

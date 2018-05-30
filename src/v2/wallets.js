@@ -1,4 +1,5 @@
 const bitcoin = require('../bitcoin');
+const bitcoinMessage = require('bitcoinjs-message');
 const common = require('../common');
 const Wallet = require('./wallet');
 const Promise = require('bluebird');
@@ -171,154 +172,182 @@ Wallets.prototype.add = function(params, callback) {
  * 4. Creates the BitGo key on the service
  * 5. Creates the wallet on BitGo with the 3 public keys above
  * @param params
+ * @param params.label
+ * @param params.passphrase
+ * @param params.userKey User xpub
+ * @param params.backupXpub Backup xpub
+ * @param params.backupXpubProvider
+ * @param params.enterprise
+ * @param params.disableTransactionNotifications
+ * @param params.passcodeEncryptionCode
+ * @param params.coldDerivationSeed
+ * @param params.gasPrice
  * @param callback
  * @returns {*}
  */
-Wallets.prototype.generateWallet = co(function *(params, callback) {
-  params = params || {};
-  common.validateParams(params, ['label'], ['passphrase', 'userKey', 'backupXpub', 'enterprise', 'passcodeEncryptionCode'], callback);
-  const self = this;
-  const label = params.label;
+Wallets.prototype.generateWallet = function(params, callback) {
+  return co(function *() {
+    params = params || {};
+    common.validateParams(params, ['label'], ['passphrase', 'userKey', 'backupXpub', 'enterprise', 'passcodeEncryptionCode'], callback);
+    const self = this;
+    const label = params.label;
 
-  if ((!!params.backupXpub + !!params.backupXpubProvider) > 1) {
-    throw new Error('Cannot provide more than one backupXpub or backupXpubProvider flag');
-  }
+    if ((!!params.backupXpub + !!params.backupXpubProvider) > 1) {
+      throw new Error('Cannot provide more than one backupXpub or backupXpubProvider flag');
+    }
 
-  if (params.disableTransactionNotifications !== undefined && !_.isBoolean(params.disableTransactionNotifications)) {
-    throw new Error('Expected disableTransactionNotifications to be a boolean. ');
-  }
+    if (params.disableTransactionNotifications !== undefined && !_.isBoolean(params.disableTransactionNotifications)) {
+      throw new Error('Expected disableTransactionNotifications to be a boolean. ');
+    }
 
-  if (params.passcodeEncryptionCode && !_.isString(params.passcodeEncryptionCode)) {
-    throw new Error('passcodeEncryptionCode must be a string');
-  }
+    if (params.passcodeEncryptionCode && !_.isString(params.passcodeEncryptionCode)) {
+      throw new Error('passcodeEncryptionCode must be a string');
+    }
 
-  let userKeychain;
-  let backupKeychain;
-  let bitgoKeychain;
-  let derivationPath;
+    let derivationPath;
 
-  const passphrase = params.passphrase;
-  const canEncrypt = (!!passphrase && typeof passphrase === 'string');
-  const isCold = (!canEncrypt || !!params.userKey);
+    const passphrase = params.passphrase;
+    const canEncrypt = (!!passphrase && typeof passphrase === 'string');
+    const isCold = (!canEncrypt || !!params.userKey);
 
-  // Add the user keychain
-  const userKeychainPromise = co(function *() {
-    let userKeychainParams;
-    // User provided user key
-    if (params.userKey) {
-      userKeychain = { pub: params.userKey };
-      userKeychainParams = userKeychain;
-      if (params.coldDerivationSeed) {
-        // the derivation only makes sense when a key already exists
-        const derivation = self.baseCoin.deriveKeyWithSeed({ key: params.userKey, seed: params.coldDerivationSeed });
-        derivationPath = derivation.derivationPath;
-        userKeychain.pub = derivation.key;
+    // Add the user keychain
+    const userKeychainPromise = co(function *() {
+      let userKeychainParams;
+      let userKeychain;
+      // User provided user key
+      if (params.userKey) {
+        userKeychain = { pub: params.userKey };
+        userKeychainParams = userKeychain;
+        if (params.coldDerivationSeed) {
+          // the derivation only makes sense when a key already exists
+          const derivation = self.baseCoin.deriveKeyWithSeed({ key: params.userKey, seed: params.coldDerivationSeed });
+          derivationPath = derivation.derivationPath;
+          userKeychain.pub = derivation.key;
+        }
+      } else {
+        if (!canEncrypt) {
+          throw new Error('cannot generate user keypair without passphrase');
+        }
+        // Create the user key.
+        userKeychain = self.baseCoin.keychains().create();
+        userKeychain.encryptedPrv = self.bitgo.encrypt({ password: passphrase, input: userKeychain.prv });
+        userKeychainParams = {
+          pub: userKeychain.pub,
+          encryptedPrv: userKeychain.encryptedPrv,
+          originalPasscodeEncryptionCode: params.passcodeEncryptionCode
+        };
       }
-    } else {
-      if (!canEncrypt) {
-        throw new Error('cannot generate user keypair without passphrase');
+
+      const newUserKeychain = yield self.baseCoin.keychains().add(userKeychainParams);
+      return _.extend({}, newUserKeychain, userKeychain);
+    })();
+
+    const backupKeychainPromise = Promise.try(function() {
+      if (params.backupXpubProvider || self.baseCoin instanceof RmgCoin) {
+        // If requested, use a KRS or backup key provider
+        return self.baseCoin.keychains().createBackup({
+          provider: params.backupXpubProvider || 'defaultRMGBackupProvider',
+          disableKRSEmail: params.disableKRSEmail,
+          type: null
+        });
       }
-      // Create the user and backup key.
-      userKeychain = self.baseCoin.keychains().create();
-      userKeychain.encryptedPrv = self.bitgo.encrypt({ password: passphrase, input: userKeychain.prv });
-      userKeychainParams = {
-        pub: userKeychain.pub,
-        encryptedPrv: userKeychain.encryptedPrv,
-        originalPasscodeEncryptionCode: params.passcodeEncryptionCode
+
+      // User provided backup xpub
+      if (params.backupXpub) {
+        // user provided backup ethereum address
+        return self.baseCoin.keychains().add({ pub: params.backupXpub, source: 'backup' });
+      } else {
+        if (!canEncrypt) {
+          throw new Error('cannot generate backup keypair without passphrase');
+        }
+        // No provided backup xpub or address, so default to creating one here
+        return self.baseCoin.keychains().createBackup();
+      }
+    });
+
+    const { userKeychain, backupKeychain, bitgoKeychain } = yield Promise.props({
+      userKeychain: userKeychainPromise,
+      backupKeychain: backupKeychainPromise,
+      bitgoKeychain: self.baseCoin.keychains().createBitGo({ enterprise: params.enterprise })
+    });
+
+    // Add the user keychain
+    let walletParams = {
+      label: label,
+      m: 2,
+      n: 3,
+      keys: [
+        userKeychain.id,
+        backupKeychain.id,
+        bitgoKeychain.id
+      ],
+      isCold: isCold
+    };
+
+    // add signatures
+    if (_.isString(userKeychain.prv)) {
+      const privateKey = bitcoin.HDNode.fromBase58(userKeychain.prv).getKey();
+      const privateKeyBuffer = privateKey.d.toBuffer();
+      const isCompressed = privateKey.compressed;
+      const prefix = bitcoin.networks.bitcoin.messagePrefix;
+      const backupPubSignature = bitcoinMessage.sign(backupKeychain.pub, privateKeyBuffer, isCompressed, prefix).toString('hex');
+      const bitgoPubSignature = bitcoinMessage.sign(bitgoKeychain.pub, privateKeyBuffer, isCompressed, prefix).toString('hex');
+      walletParams.keySignatures = {
+        backup: backupPubSignature,
+        bitgo: bitgoPubSignature
       };
     }
 
-    const newUserKeychain = yield self.baseCoin.keychains().add(userKeychainParams);
-    userKeychain = _.extend({}, newUserKeychain, userKeychain);
-  })();
-
-  const backupKeychainPromise = Promise.try(function() {
-    if (params.backupXpubProvider || self.baseCoin instanceof RmgCoin) {
-      // If requested, use a KRS or backup key provider
-      return self.baseCoin.keychains().createBackup({
-        provider: params.backupXpubProvider || 'defaultRMGBackupProvider',
-        disableKRSEmail: params.disableKRSEmail,
-        type: null
-      });
-    }
-
-    // User provided backup xpub
-    if (params.backupXpub) {
-      // user provided backup ethereum address
-      backupKeychain = { pub: params.backupXpub, source: 'backup' };
-    } else {
-      if (!canEncrypt) {
-        throw new Error('cannot generate backup keypair without passphrase');
+    if (!_.isUndefined(params.enterprise)) {
+      if (!_.isString(params.enterprise)) {
+        throw new Error('invalid enterprise argument, expecting string');
       }
-      // No provided backup xpub or address, so default to creating one here
-      return self.baseCoin.keychains().createBackup();
+      walletParams.enterprise = params.enterprise;
     }
 
-    return self.baseCoin.keychains().add(backupKeychain);
-  })
-  .then(function(newBackupKeychain) {
-    backupKeychain = _.extend({}, newBackupKeychain, backupKeychain);
-  });
+    if (!_.isUndefined(params.disableTransactionNotifications)) {
+      if (!_.isBoolean(params.disableTransactionNotifications)) {
+        throw new Error('invalid disableTransactionNotifications argument, expecting boolean');
+      }
+      walletParams.disableTransactionNotifications = params.disableTransactionNotifications;
+    }
 
-  const bitgoKeychainParams = {
-    enterprise: params.enterprise
-  };
+    if (!_.isUndefined(params.gasPrice)) {
+      if (!_.isNumber(params.gasPrice)) {
+        throw new Error('invalid gas price argument, expecting number');
+      }
+      walletParams.gasPrice = params.gasPrice;
+    }
 
-  const bitgoKeychainPromise = self.baseCoin.keychains().createBitGo(bitgoKeychainParams)
-  .then(function(keychain) {
-    bitgoKeychain = keychain;
-  });
+    if (self.baseCoin.getFamily() === 'xrp' && !_.isUndefined(params.rootPrivateKey)) {
+      walletParams.rootPrivateKey = params.rootPrivateKey;
+    }
 
-  // Add the user keychain
-  yield Promise.all([userKeychainPromise, backupKeychainPromise, bitgoKeychainPromise]);
-  let walletParams = {
-    label: label,
-    m: 2,
-    n: 3,
-    keys: [
-      userKeychain.id,
-      backupKeychain.id,
-      bitgoKeychain.id
-    ],
-    isCold: isCold
-  };
+    const keychains = {
+      userKeychain,
+      backupKeychain,
+      bitgoKeychain
+    };
+    walletParams = yield self.baseCoin.supplementGenerateWallet(walletParams, keychains);
+    const newWallet = yield self.bitgo.post(self.baseCoin.url('/wallet')).send(walletParams).result();
+    const result = {
+      wallet: new self.coinWallet(self.bitgo, self.baseCoin, newWallet),
+      userKeychain: userKeychain,
+      backupKeychain: backupKeychain,
+      bitgoKeychain: bitgoKeychain
+    };
 
-  if (params.enterprise) {
-    walletParams.enterprise = params.enterprise;
-  }
+    if (!_.isUndefined(backupKeychain.prv)) {
+      result.warning = 'Be sure to backup the backup keychain -- it is not stored anywhere else!';
+    }
 
-  if (params.disableTransactionNotifications) {
-    walletParams.disableTransactionNotifications = params.disableTransactionNotifications;
-  }
+    if (!_.isUndefined(derivationPath)) {
+      userKeychain.derivationPath = derivationPath;
+    }
 
-  if (self.baseCoin.getFamily() === 'xrp' && params.rootPrivateKey) {
-    walletParams.rootPrivateKey = params.rootPrivateKey;
-  }
-
-  const keychains = {
-    userKeychain,
-    backupKeychain,
-    bitgoKeychain
-  };
-  walletParams = yield self.baseCoin.supplementGenerateWallet(walletParams, keychains);
-  const newWallet = yield self.bitgo.post(self.baseCoin.url('/wallet')).send(walletParams).result();
-  const result = {
-    wallet: new self.coinWallet(self.bitgo, self.baseCoin, newWallet),
-    userKeychain: userKeychain,
-    backupKeychain: backupKeychain,
-    bitgoKeychain: bitgoKeychain
-  };
-
-  if (backupKeychain.prv) {
-    result.warning = 'Be sure to backup the backup keychain -- it is not stored anywhere else!';
-  }
-
-  if (derivationPath) {
-    userKeychain.derivationPath = derivationPath;
-  }
-
-  return Promise.resolve(result).asCallback(callback);
-});
+    return result;
+  }).call(this).asCallback(callback);
+};
 
 //
 // listShares
@@ -363,6 +392,23 @@ Wallets.prototype.updateShare = function(params, callback) {
   .send(params)
   .result()
   .nodeify(callback);
+};
+
+//
+// resendShareInvite
+// Resends a wallet share invitation email
+// Params:
+//    walletShareId - the wallet share whose invitiation should be resent
+//
+Wallets.prototype.resendShareInvite = function(params, callback) {
+  return co(function *() {
+    params = params || {};
+    common.validateParams(params, ['walletShareId'], [], callback);
+
+    const urlParts = params.walletShareId + '/resendemail';
+    return this.bitgo.post(this.baseCoin.url('/walletshare/' + urlParts))
+    .result();
+  }).call(this).asCallback(callback);
 };
 
 //
@@ -479,6 +525,44 @@ Wallets.prototype.getWallet = function(params, callback) {
     return new self.coinWallet(self.bitgo, self.baseCoin, wallet);
   })
   .nodeify(callback);
+};
+
+/**
+ * Get a wallet by its address
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+Wallets.prototype.getWalletByAddress = function(params, callback) {
+  params = params || {};
+  common.validateParams(params, ['address'], [], callback);
+
+  const self = this;
+
+  return this.bitgo.get(this.baseCoin.url('/wallet/address/' + params.address))
+  .result()
+  .then(function(wallet) {
+    return new self.coinWallet(self.bitgo, self.baseCoin, wallet);
+  })
+  .nodeify(callback);
+};
+
+/**
+ * For any given supported coin, get total balances for all wallets of that
+ * coin type on the account.
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+Wallets.prototype.getTotalBalances = function(params, callback) {
+  return co(function *() {
+    params = params || {};
+    common.validateParams(params, [], [], callback);
+
+    return this.bitgo.get(this.baseCoin.url('/wallet/balances'))
+    .result()
+    .nodeify(callback);
+  }).call(this).asCallback(callback);
 };
 
 module.exports = Wallets;

@@ -1,3 +1,4 @@
 {
-  "phabricator.uri" : "https://phabricator.bitgo.com"
+  "phabricator.uri" : "https://phabricator.bitgo.com",
+  "arc.land.onto.default": "master"
 }

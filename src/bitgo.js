@@ -34,6 +34,8 @@ const moment = require('moment');
 const _ = require('lodash');
 const url = require('url');
 const querystring = require('querystring');
+const config = require('./config');
+const crypto = require('crypto');
 
 if (!process.browser) {
   require('superagent-proxy')(superagent);
@@ -158,23 +160,19 @@ const BitGo = function(params) {
 
   // By default, we operate on the test server.
   // Deprecate useProduction in the future
+  let env;
+
   if (params.useProduction) {
     if (params.env && params.env !== 'prod') {
-      throw new Error('Cannot set test environment and use production');
+      throw new Error('cannot use useProduction when env=' + params.env);
     }
-    params.env = 'prod';
-  }
-
-  if (params.env === 'production') {
-    params.env = 'prod'; // make life easier
-  }
-
-  if (params.customRootURI ||
+    env = 'prod';
+  } else if (params.customRootURI ||
     params.customBitcoinNetwork ||
     params.customSigningAddress ||
     process.env.BITGO_CUSTOM_ROOT_URI ||
     process.env.BITGO_CUSTOM_BITCOIN_NETWORK) {
-    params.env = 'custom';
+    env = 'custom';
     if (params.customRootURI) {
       common.Environments['custom'].uri = params.customRootURI;
     }
@@ -184,29 +182,35 @@ const BitGo = function(params) {
     if (params.customSigningAddress) {
       common.Environments['custom'].customSigningAddress = params.customSigningAddress;
     }
+  } else {
+    env = params.env || process.env.BITGO_ENV;
   }
 
-  if (params.env) {
-    if (common.Environments[params.env]) {
-      this._baseUrl = common.Environments[params.env].uri;
+  if (env === 'production') {
+    env = 'prod'; // make life easier
+  }
+
+  if (env) {
+    if (common.Environments[env]) {
+      this._baseUrl = common.Environments[env].uri;
     } else {
-      throw new Error('invalid environment');
+      throw new Error('invalid environment ' + env + '. Supported environments: test, prod');
     }
   } else {
-    params.env = process.env.BITGO_ENV || 'test';
-    if (!testNetWarningMessage && params.env === 'test') {
+    env = 'test';
+    if (!testNetWarningMessage) {
       testNetWarningMessage = true;
-      console.log('BitGo SDK env not set - defaulting to testnet at test.bitgo.com.');
+      console.log('BitGo SDK env not set - defaulting to test at test.bitgo.com.');
     }
   }
-  this.env = params.env;
+  this.env = env;
 
-  common.setNetwork(common.Environments[params.env].network);
-  common.setEthNetwork(common.Environments[params.env].ethNetwork);
-  common.setRmgNetwork(common.Environments[params.env].rmgNetwork);
+  common.setNetwork(common.Environments[env].network);
+  common.setEthNetwork(common.Environments[env].ethNetwork);
+  common.setRmgNetwork(common.Environments[env].rmgNetwork);
 
   if (!this._baseUrl) {
-    this._baseUrl = common.Environments[params.env].uri;
+    this._baseUrl = common.Environments[env].uri;
   }
 
   this._baseApiUrl = this._baseUrl + '/api/v1';
@@ -297,7 +301,7 @@ const BitGo = function(params) {
           }
           this._data = data;
 
-          let urlDetails = url.parse(req.url);
+          const urlDetails = url.parse(req.url);
 
           let queryString = null;
           if (req._query && req._query.length > 0) {
@@ -317,28 +321,16 @@ const BitGo = function(params) {
               urlDetails.search = '?' + queryString;
             }
             req.url = urlDetails.format();
-            urlDetails = url.parse(req.url);
           }
 
-          const queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
-          const timestamp = Date.now();
-          const signatureSubject = [timestamp, queryPath, data].join('|');
-
-          this.set('Auth-Timestamp', timestamp);
-
-          // calculate the SHA256 hash of the token
-          const hashDigest = sjcl.hash.sha256.hash(bitgo._token);
-          const hash = sjcl.codec.hex.fromBits(hashDigest);
+          const requestProperties = bitgo.calculateRequestHeaders({ url: req.url, token: bitgo._token, text: data });
+          this.set('Auth-Timestamp', requestProperties.timestamp);
 
           // we're not sending the actual token, but only its hash
-          this.set('Authorization', 'Bearer ' + hash);
+          this.set('Authorization', 'Bearer ' + requestProperties.tokenHash);
 
-          // calculate the HMAC
-          const hmacKey = sjcl.codec.utf8String.toBits(bitgo._token);
-          const hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
-          const hmac = sjcl.codec.hex.fromBits(hmacDigest);
-
-          this.set('HMAC', hmac);
+          // set the HMAC
+          this.set('HMAC', requestProperties.hmac);
         }
 
         return this.prototypicalEnd.apply(this, arguments);
@@ -353,21 +345,20 @@ const BitGo = function(params) {
           return response;
         }
 
-        const urlDetails = url.parse(req.url);
+        const verificationResponse = bitgo.verifyResponse({
+          url: req.url,
+          hmac: response.headers.hmac,
+          statusCode: response.statusCode,
+          text: response.text,
+          timestamp: response.headers.timestamp,
+          token: req.authenticationToken
+        });
 
-        // verify the HMAC and timestamp
-        const timestamp = response.headers.timestamp;
-        const queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
-
-        const signatureSubject = [timestamp, queryPath, response.statusCode, response.text].join('|');
-
-        // calculate the HMAC
-        const hmacKey = sjcl.codec.utf8String.toBits(req.authenticationToken);
-        const hmacDigest = (new sjcl.misc.hmac(hmacKey, sjcl.hash.sha256)).mac(signatureSubject);
-        const expectedHmac = sjcl.codec.hex.fromBits(hmacDigest);
-
-        const receivedHmac = response.headers.hmac;
-        if (expectedHmac !== receivedHmac) {
+        if (!verificationResponse.isValid) {
+          // calculate the HMAC
+          const receivedHmac = response.headers.hmac;
+          const expectedHmac = verificationResponse.expectedHmac;
+          const signatureSubject = verificationResponse.signatureSubject;
           const errorDetails = {
             expectedHmac,
             receivedHmac,
@@ -416,7 +407,23 @@ const BitGo = function(params) {
   }
 
   // Kick off first load of constants
-  this.fetchConstants();
+  this.fetchConstants({}, function(err) {
+    if (err) {
+      // make sure an error does not terminate the entire script
+      console.error('failed to fetch initial client constants from BitGo');
+      console.trace(err);
+    }
+  });
+};
+
+/**
+ * Calculate the HMAC for the given key and message
+ * @param key {String} - the key to use for the HMAC
+ * @param message {String} - the actual message to HMAC
+ * @returns {*} - the result of the HMAC operation
+ */
+BitGo.prototype.calculateHMAC = function(key, message) {
+  return crypto.createHmac('sha256', key).update(message).digest('hex');
 };
 
 /**
@@ -424,7 +431,7 @@ const BitGo = function(params) {
  * @param coinName
  */
 BitGo.prototype.coin = function(coinName) {
-  return BaseCoin(this, coinName);
+  return BaseCoin.getInstance(this, coinName);
 };
 
 /**
@@ -501,7 +508,11 @@ BitGo.prototype.getEnv = function() {
 };
 
 BitGo.prototype.clear = function() {
-  this._user = this._token = this._refreshToken = undefined;
+  // TODO: are there any other fields which should be cleared?
+  this._user = undefined;
+  this._token = undefined;
+  this._refreshToken = undefined;
+  this._ecdhXprv = undefined;
 };
 
 // Helper function to return a rejected promise or call callback with error
@@ -560,9 +571,7 @@ BitGo.prototype.verifyPassword = function(params, callback) {
   if (!this._user || !this._user.username) {
     throw new Error('no current user');
   }
-  const key = sjcl.codec.utf8String.toBits(this._user.username);
-  const hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
-  const hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(params.password));
+  const hmacPassword = this.calculateHMAC(this._user.username, params.password);
 
   return this.post(this.url('/user/verifypassword'))
   .send({ password: hmacPassword })
@@ -854,7 +863,9 @@ BitGo.prototype.handleTokenIssuance = function(responseBody, password) {
   // make sure the response body contains the necessary properties
   common.validateParams(responseBody, ['derivationPath'], ['encryptedECDHXprv']);
 
-  const serverXpub = common.Environments[this.env].serverXpub;
+  const environment = this.env;
+  const environmentConfig = common.Environments[environment];
+  const serverXpub = environmentConfig.serverXpub;
   let ecdhXprv = this._ecdhXprv;
   if (!ecdhXprv) {
     if (!password || !responseBody.encryptedECDHXprv) {
@@ -897,30 +908,99 @@ BitGo.prototype.handleTokenIssuance = function(responseBody, password) {
   return response;
 };
 
-//
-// authenticate
-// Login to the bitgo system.
-// Params:
-// - forceV1Auth (boolean)
-// Returns:
-//   {
-//     token: <user's token>,
-//     user: <user object
-//   }
-BitGo.prototype.authenticate = function(params, callback) {
+/**
+ * Calculate the string that is to be HMACed for a certain HTTP request or response
+ * @param urlPath
+ * @param text
+ * @param timestamp
+ * @param statusCode Only set for HTTP responses, leave blank for requests
+ * @returns {string}
+ */
+BitGo.prototype.calculateHMACSubject = function({ urlPath, text, timestamp, statusCode }) {
+  const urlDetails = url.parse(urlPath);
+  const queryPath = (urlDetails.query && urlDetails.query.length > 0) ? urlDetails.path : urlDetails.pathname;
+  if (!_.isUndefined(statusCode) && _.isInteger(statusCode) && _.isFinite(statusCode)) {
+    return [timestamp, queryPath, statusCode, text].join('|');
+  }
+  return [timestamp, queryPath, text].join('|');
+};
+
+/**
+ * Calculate the HMAC for an HTTP request
+ * @param urlPath
+ * @param text
+ * @param timestamp
+ * @param token
+ * @returns {*}
+ */
+BitGo.prototype.calculateRequestHMAC = function({ url: urlPath, text, timestamp, token }) {
+  const signatureSubject = this.calculateHMACSubject({ urlPath, text, timestamp });
+
+  // calculate the HMAC
+  return this.calculateHMAC(token, signatureSubject);
+};
+
+/**
+ * Calculate request headers with HMAC
+ * @param url
+ * @param text
+ * @param token
+ * @returns {{hmac: *, timestamp: number, tokenHash: *}}
+ */
+BitGo.prototype.calculateRequestHeaders = function({ url, text, token }) {
+  const timestamp = Date.now();
+  const hmac = this.calculateRequestHMAC({ url, text, timestamp, token });
+
+  // calculate the SHA256 hash of the token
+  const hashDigest = sjcl.hash.sha256.hash(token);
+  const tokenHash = sjcl.codec.hex.fromBits(hashDigest);
+  return {
+    hmac,
+    timestamp,
+    tokenHash
+  };
+};
+
+/**
+ * Verify the HMAC for an HTTP response
+ * @param url
+ * @param statusCode
+ * @param text
+ * @param timestamp
+ * @param token Authentication token
+ * @param hmac
+ * @returns {{isValid: boolean, expectedHmac: *, signatureSubject: *}}
+ */
+BitGo.prototype.verifyResponse = function({ url: urlPath, statusCode, text, timestamp, token, hmac }) {
+  const signatureSubject = this.calculateHMACSubject({ urlPath, text, timestamp, statusCode });
+
+  // calculate the HMAC
+  const expectedHmac = this.calculateHMAC(token, signatureSubject);
+
+  // verify the HMAC and timestamp
+  return {
+    isValid: expectedHmac === hmac,
+    expectedHmac,
+    signatureSubject
+  };
+};
+
+/**
+ *
+ * @param params
+ * @param callback
+ */
+BitGo.prototype.preprocessAuthenticationParams = function(params) {
   params = params || {};
-  common.validateParams(params, ['username', 'password'], ['otp'], callback);
+  common.validateParams(params, ['username', 'password'], ['otp']);
 
   const username = params.username.toLowerCase();
   const password = params.password;
   const otp = params.otp;
   const trust = params.trust;
-  const forceV1Auth = !!params.forceV1Auth;
 
   // Calculate the password HMAC so we don't send clear-text passwords
-  const key = sjcl.codec.utf8String.toBits(username);
-  const hmac = new sjcl.misc.hmac(key, sjcl.hash.sha256);
-  const hmacPassword = sjcl.codec.hex.fromBits(hmac.encrypt(password));
+  const hmacPassword = this.calculateHMAC(username, password);
 
   const authParams = {
     email: username,
@@ -940,6 +1020,26 @@ BitGo.prototype.authenticate = function(params, callback) {
     authParams.extensible = true;
     authParams.extensionAddress = this._extensionKey.getAddress();
   }
+
+  return authParams;
+};
+
+//
+// authenticate
+// Login to the bitgo system.
+// Params:
+// - forceV1Auth (boolean)
+// Returns:
+//   {
+//     token: <user's token>,
+//     user: <user object
+//   }
+BitGo.prototype.authenticate = function(params, callback) {
+  params = params || {};
+  const forceV1Auth = !!params.forceV1Auth;
+
+  const authParams = this.preprocessAuthenticationParams(params, callback);
+  const password = params.password;
 
   const self = this;
   if (this._token) {
@@ -1335,6 +1435,45 @@ BitGo.prototype.getUser = function(params, callback) {
   .nodeify(callback);
 };
 
+/**
+ * Change the password of the currently logged in user, also change all v1 and v2 keychain passwords if they match the
+ * given oldPassword. Returns nothing on success or throws an error when something went wrong.
+ * @param params.oldPassword {String} - the current password
+ * @param params.newPassword {String} - the new password
+ * @param callback
+ */
+BitGo.prototype.changePassword = function(params, callback) {
+  return co(function *coChangePassword() {
+    params = params || {};
+    common.validateParams(params, ['oldPassword', 'newPassword'], [], callback);
+
+    const validation = yield this.verifyPassword({ password: params.oldPassword });
+    if (!validation) {
+      throw new Error('the provided oldPassword is incorrect');
+    }
+
+    // it doesn't matter which coin we choose because the v2 updatePassword functions updates all v2 keychains
+    // we just need to choose a coin that exists in the current environment
+    const coin = common.Environments[this.getEnv()].network === 'bitcoin' ? 'btc' : 'tbtc';
+
+    const updateKeychainPasswordParams = { oldPassword: params.oldPassword, newPassword: params.newPassword };
+    const v1KeychainUpdatePWResult = yield this.keychains().updatePassword(updateKeychainPasswordParams);
+    const v2Keychains = yield this.coin(coin).keychains().updatePassword(updateKeychainPasswordParams);
+
+    const updatePasswordParams = {
+      keychains: v1KeychainUpdatePWResult.keychains,
+      v2_keychains: v2Keychains,
+      version: v1KeychainUpdatePWResult.version,
+      oldPassword: this.calculateHMAC(this.user().username, params.oldPassword),
+      password: this.calculateHMAC(this.user().username, params.newPassword)
+    };
+
+    return this.post(this.url('/user/changepassword'))
+    .send(updatePasswordParams)
+    .result();
+  }).call(this).asCallback(callback);
+};
+
 //
 // me
 // Get the current logged in user
@@ -1641,62 +1780,154 @@ BitGo.prototype.getWalletAddress = function(params, callback) {
   .nodeify(callback);
 };
 
+/**
+ * Fetch list of user webhooks
+ *
+ * @param callback
+ * @returns {*}
+ */
+BitGo.prototype.listWebhooks = function(callback) {
+  return this.get(this.url('/webhooks'))
+  .result()
+  .nodeify(callback);
+};
+
+/**
+ * Add new user webhook
+ *
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+BitGo.prototype.addWebhook = function(params, callback) {
+  params = params || {};
+  common.validateParams(params, ['url', 'type'], [], callback);
+
+  return this.post(this.url('/webhooks'))
+  .send(params)
+  .result()
+  .nodeify(callback);
+};
+
+/**
+ * Remove user webhook
+ *
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+BitGo.prototype.removeWebhook = function(params, callback) {
+  params = params || {};
+  common.validateParams(params, ['url', 'type'], [], callback);
+
+  return this.del(this.url('/webhooks'))
+  .send(params)
+  .result()
+  .nodeify(callback);
+};
+
+/**
+ * Fetch list of webhook notifications for the user
+ *
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+BitGo.prototype.listWebhookNotifications = function(params, callback) {
+  params = params || {};
+  common.validateParams(params, [], [], callback);
+
+  const query = {};
+  if (params.prevId) {
+    if (!_.isString(params.prevId)) {
+      throw new Error('invalid prevId argument, expecting string');
+    }
+    query.prevId = params.prevId;
+  }
+  if (params.limit) {
+    if (!_.isNumber(params.limit)) {
+      throw new Error('invalid limit argument, expecting number');
+    }
+    query.limit = params.limit;
+  }
+
+  return this.get(this.url('/webhooks/notifications'))
+  .query(query)
+  .result()
+  .nodeify(callback);
+};
+
+/**
+ * Simulate a user webhook
+ *
+ * @param params
+ * @param callback
+ * @returns {*}
+ */
+BitGo.prototype.simulateWebhook = function(params, callback) {
+  params = params || {};
+  common.validateParams(params, ['webhookId', 'blockId'], [], callback);
+
+  const webhookId = params.webhookId;
+  return this.post(this.url('/webhooks/' + webhookId + '/simulate'))
+  .send(params)
+  .result()
+  .nodeify(callback);
+};
+
 //
 // fetchConstants
 // Receives a TTL and refetches as necessary
 //
 BitGo.prototype.fetchConstants = function(params, callback) {
-  const env = this.env;
+  return co(function *() {
+    const env = this.env;
 
-  if (!BitGo.prototype._constants) {
-    BitGo.prototype._constants = {};
-  }
-  if (!BitGo.prototype._constantsExpire) {
-    BitGo.prototype._constantsExpire = {};
-  }
+    if (!BitGo.prototype._constants) {
+      BitGo.prototype._constants = {};
+    }
+    if (!BitGo.prototype._constantsExpire) {
+      BitGo.prototype._constantsExpire = {};
+    }
 
-  if (BitGo.prototype._constants[env] && BitGo.prototype._constantsExpire[env] && new Date() < BitGo.prototype._constantsExpire[env]) {
-    return Promise.try(function() {
+    if (BitGo.prototype._constants[env] && BitGo.prototype._constantsExpire[env] && new Date() < BitGo.prototype._constantsExpire[env]) {
       return BitGo.prototype._constants[env];
-    })
-    .nodeify(callback);
-  }
+    }
 
-  return this.get(this.url('/client/constants'))
-  .result()
-  .then(function(result) {
-    BitGo.prototype._constants[env] = result.constants;
-    BitGo.prototype._constantsExpire[env] = moment.utc().add(result.ttl, 'second').toDate();
+    const result = yield superagent.get(this.url('/client/constants'));
+    BitGo.prototype._constants[env] = result.body.constants;
+
+    BitGo.prototype._constantsExpire[env] = moment.utc().add(result.body.ttl, 'second').toDate();
     return BitGo.prototype._constants[env];
-  })
-  .nodeify(callback);
+  }).call(this).asCallback(callback);
 };
 
-//
-// getConstants
-// Get a set of constants from the server to use as defaults
-//
+/**
+ * Synchronously get constants which are relevant to the client.
+ *
+ * Note: This function has a known race condition. It may return different values over time,
+ * especially if called shortly after creation of the BitGo object.
+ *
+ * New code should call fetchConstants() directly instead.
+ *
+ * @deprecated
+ * @param params
+ * @return {Object} The client constants object
+ */
 BitGo.prototype.getConstants = function(params) {
   params = params || {};
 
-  // TODO: once server starts returning eth address keychains, remove bitgoEthAddress
-  const defaultConstants = {
-    maxFee: 0.1e8,
-    maxFeeRate: 1000000,
-    minFeeRate: 5000,
-    fallbackFeeRate: 50000,
-    minOutputSize: 2730,
-    minInstantFeeRate: 10000,
-    bitgoEthAddress: '0x0f47ea803926926f299b7f1afc8460888d850f47',
-    eth: {
-      tokens: []
+  // kick off a fresh request for the client constants
+  this.fetchConstants(params, function(err) {
+    if (err) {
+      // make sure an error does not terminate the entire script
+      console.error('failed to fetch client constants from BitGo');
+      console.trace(err);
     }
-  };
-
-  this.fetchConstants(params);
+  });
 
   // use defaultConstants as the backup for keys that are not set in this._constants
-  return _.merge({}, defaultConstants, BitGo.prototype._constants[this.env]);
+  return _.merge({}, config.defaultConstants(this.env), BitGo.prototype._constants[this.env]);
 };
 
 module.exports = BitGo;

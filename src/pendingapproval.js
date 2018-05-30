@@ -182,7 +182,7 @@ PendingApproval.prototype.recreateAndSignTransaction = function(params, callback
       return;
     }
     if (transaction.outs.length <= 2) {
-      transaction.outs.forEach(function (out) {
+      transaction.outs.forEach(function(out) {
         const outAddress = bitcoin.address.fromOutputScript(out.script, network).toBase58Check();
         if (self.info().transactionRequest.destinationAddress === outAddress) {
           // If this is the destination, then spend to it
@@ -197,7 +197,7 @@ PendingApproval.prototype.recreateAndSignTransaction = function(params, callback
     return self.wallet.addresses({ chain: 1, sort: -1, limit: 500 })
     .then(function(result) {
       const changeAddresses = _.keyBy(result.addresses, 'address');
-      transaction.outs.forEach(function (out) {
+      transaction.outs.forEach(function(out) {
         const outAddress = bitcoin.address.fromOutputScript(out.script, network).toBase58Check();
         if (!changeAddresses[outAddress]) {
           // If this is not a change address, then spend to it
@@ -256,8 +256,21 @@ PendingApproval.prototype.approve = function(params, callback) {
   common.validateParams(params, [], ['walletPassphrase', 'otp'], callback);
 
   let canRecreateTransaction = true;
-  if (this.type() === 'transactionRequest' && !(params.walletPassphrase || params.xprv)) {
-    canRecreateTransaction = false;
+  if (this.type() === 'transactionRequest') {
+    if (!params.walletPassphrase && !params.xprv) {
+      canRecreateTransaction = false;
+    }
+
+    // check the wallet balance and compare it with the transaction amount and fee
+    if (_.isObject(_.get(this, 'wallet.wallet'))) {
+      const requestedAmount = this.pendingApproval.info.transactionRequest.requestedAmount || 0;
+      const walletBalance = this.wallet.wallet.spendableBalance;
+      const delta = Math.abs(requestedAmount - walletBalance);
+      if (delta <= 10000) {
+        // it's a sweep because we're within 10k satoshis of the wallet balance
+        canRecreateTransaction = false;
+      }
+    }
   }
 
   const self = this;
@@ -279,7 +292,8 @@ PendingApproval.prototype.approve = function(params, callback) {
 
       return self.populateWallet()
       .then(function() {
-        return self.recreateAndSignTransaction(_.extend(params, { txHex: self.info().transactionRequest.transaction }));
+        const recreationParams = _.extend({}, params, { txHex: self.info().transactionRequest.transaction }, self.info().transactionRequest.buildParams);
+        return self.recreateAndSignTransaction(recreationParams);
       });
     }
   })

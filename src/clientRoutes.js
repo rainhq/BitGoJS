@@ -225,16 +225,17 @@ const handleV2VerifyAddress = function(req) {
   };
 };
 
-// handle Litecoin address canonicalization
-const handleLtcCanonicalAddress = function(req) {
+// handle address canonicalization
+const handleCanonicalAddress = function(req) {
   const bitgo = req.bitgo;
   const coin = bitgo.coin(req.params.coin);
-  if (coin.getFamily() !== 'ltc') {
-    throw new Error('only Litecoin address canonicalization is supported');
+  if (!['ltc', 'bch'].includes(coin.getFamily())) {
+    throw new Error('only Litecoin/Bitcoin Cash address canonicalization is supported');
   }
   const address = req.body.address;
-  const version = req.body.scriptHashVersion;
-  return coin.canonicalAddress(address, version);
+  const fallbackVersion = req.body.scriptHashVersion; // deprecate
+  const version = req.body.version;
+  return coin.canonicalAddress(address, version || fallbackVersion);
 };
 
 // handle new wallet creation
@@ -258,6 +259,13 @@ const handleV2PendingApproval = co(function *(req) {
   }
   return pendingApproval.reject(params);
 });
+
+// create a keychain
+const handleV2CreateLocalKeyChain = function(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  return coin.keychains().create(req.body);
+};
 
 // handle wallet share
 const handleV2ShareWallet = co(function *(req) {
@@ -290,12 +298,37 @@ const handleV2SignTx = function(req) {
   return coin.signTransaction(req.body);
 };
 
+// handle wallet recover token
+const handleV2RecoverToken = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.recoverToken(req.body);
+});
+
+// handle wallet fanout unspents
+const handleV2ConsolidateUnspents = co(function *(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.consolidateUnspents(req.body);
+});
+
 // handle wallet fanout unspents
 const handleV2FanOutUnspents = co(function *(req) {
   const bitgo = req.bitgo;
   const coin = bitgo.coin(req.params.coin);
   const wallet = yield coin.wallets().get({ id: req.params.id });
   return wallet.fanoutUnspents(req.body);
+});
+
+// handle wallet sweep
+const handleV2Sweep = co(function *handleV2Sweep(req) {
+  const bitgo = req.bitgo;
+  const coin = bitgo.coin(req.params.coin);
+  const wallet = yield coin.wallets().get({ id: req.params.id });
+  return wallet.sweep(req.body);
 });
 
 // handle send one
@@ -369,8 +402,17 @@ const apiResponse = function(status, result, message) {
   return err;
 };
 
+const expressJSONParser = bodyParser.json();
+
 // Perform body parsing here only on routes we want
-const parseBody = bodyParser.json();
+const parseBody = function(req, res, next) {
+  // Set the default Content-Type, in case the client doesn't set it.  If
+  // Content-Type isn't specified, Express silently refuses to parse the
+  // request body.
+  req.headers['content-type'] = req.headers['content-type'] || 'application/json';
+  return expressJSONParser(req, res, next);
+};
+
 // Create the bitgo object in the request
 const prepareBitGo = function(args) {
   const params = { env: args.env };
@@ -449,6 +491,13 @@ const promiseWrapper = function(promiseRequestHandler, args) {
 };
 
 exports = module.exports = function(app, args) {
+  // When adding new routes to BitGo Express make sure that you also add the exact same routes to the server. Since
+  // some customers were confused when calling a BitGo Express route on the BitGo server, we now handle all BitGo
+  // Express routes on the BitGo server and return an error message that says that one should call BitGo Express
+  // instead.
+  // V1 routes should be added to www/config/routes.js
+  // V2 routes should be added to www/config/routesV2.js
+
   // auth
   app.post('/api/v[12]/user/login', parseBody, prepareBitGo(args), promiseWrapper(handleLogin, args));
 
@@ -484,6 +533,9 @@ exports = module.exports = function(app, args) {
 
   // API v2
 
+  // create keychain
+  app.post('/api/v2/:coin/keychain/local', parseBody, prepareBitGo(args), promiseWrapper(handleV2CreateLocalKeyChain, args));
+
   // generate wallet
   app.post('/api/v2/:coin/wallet/generate', parseBody, prepareBitGo(args), promiseWrapper(handleV2GenerateWallet, args));
 
@@ -493,16 +545,21 @@ exports = module.exports = function(app, args) {
   // sign transaction
   app.post('/api/v2/:coin/signtx', parseBody, prepareBitGo(args), promiseWrapper(handleV2SignTx, args));
   app.post('/api/v2/:coin/wallet/:id/signtx', parseBody, prepareBitGo(args), promiseWrapper(handleV2SignTxWallet, args));
+  app.post('/api/v2/:coin/wallet/:id/recovertoken', parseBody, prepareBitGo(args), promiseWrapper(handleV2RecoverToken, args));
 
   // send transaction
   app.post('/api/v2/:coin/wallet/:id/sendcoins', parseBody, prepareBitGo(args), promiseWrapper(handleV2SendOne, args));
   app.post('/api/v2/:coin/wallet/:id/sendmany', parseBody, prepareBitGo(args), promiseWrapper(handleV2SendMany, args));
 
   // unspent changes
-  app.post('/api/v2/wallet/:id/fanoutunspents', parseBody, prepareBitGo(args), promiseWrapper(handleV2FanOutUnspents, args));
+  app.post('/api/v2/:coin/wallet/:id/consolidateunspents', parseBody, prepareBitGo(args), promiseWrapper(handleV2ConsolidateUnspents, args));
+  app.post('/api/v2/:coin/wallet/:id/fanoutunspents', parseBody, prepareBitGo(args), promiseWrapper(handleV2FanOutUnspents, args));
+
+  app.post('/api/v2/:coin/wallet/:id/sweep', parseBody, prepareBitGo(args), promiseWrapper(handleV2Sweep, args));
+
 
   // Miscellaneous
-  app.post('/api/v2/:coin/canonicaladdress', parseBody, prepareBitGo(args), promiseWrapper(handleLtcCanonicalAddress, args));
+  app.post('/api/v2/:coin/canonicaladdress', parseBody, prepareBitGo(args), promiseWrapper(handleCanonicalAddress, args));
   app.post('/api/v2/:coin/verifyaddress', parseBody, prepareBitGo(args), promiseWrapper(handleV2VerifyAddress, args));
   app.put('/api/v2/:coin/pendingapprovals/:id', parseBody, prepareBitGo(args), promiseWrapper(handleV2PendingApproval, args));
 
